@@ -23,8 +23,12 @@ read -r -d '' COMMAND <<EOF
 cd ${REPO_LOCATION}
 
 HF_HOME=$PWD/.cache/ \
+HF_HUB_OFFLINE=1 \
+TRANSFORMERS_OFFLINE=1 \
 HF_TOKEN=$HF_TOKEN \
 WANDB_API_KEY=$WANDB_API_KEY \
+NRL_MEGATRON_CHECKPOINT_DIR=$NRL_MEGATRON_CHECKPOINT_DIR \
+NEMO_GYM_SWE_WORKSPACE_ROOT=$NEMO_GYM_SWE_WORKSPACE_ROOT \
 uv run python examples/nemo_gym/run_grpo_nemo_gym.py \
     ++cluster.num_nodes=$NUM_ACTOR_NODES \
     ++logger.wandb.name=$EXP_NAME \
@@ -39,6 +43,12 @@ mount=$(findmnt -n -o TARGET --target .)
 
 FINAL_NUM_SLURM_NODES="${NUM_SLURM_NODES:-$NUM_ACTOR_NODES}"
 
+# OccupiedIdleGPUsJobReaper exemption: async (non-colocated) legitimately idles its
+# training-node GPU pool while the replay buffer fills from slow SWE reward computation,
+# which otherwise trips the idle-GPU reaper. Override via SLURM_COMMENT env if needed.
+SLURM_IDLE_EXEMPT_MINS="${SLURM_IDLE_EXEMPT_MINS:-120}"
+SLURM_COMMENT="${SLURM_COMMENT:-{\"OccupiedIdleGPUsJobReaper\":{\"exemptIdleTimeMins\":\"${SLURM_IDLE_EXEMPT_MINS}\",\"reason\":\"rl-rollout-warmup\",\"description\":\"NeMo-RL GRPO: training GPUs idle during rollout/SWE-reward buffer-fill\"}}}"
+
 COMMAND=$COMMAND \
 CONTAINER=$CONTAINER_IMAGE_PATH \
 MOUNTS=$mount:$mount \
@@ -46,7 +56,9 @@ sbatch \
     --nodes=$FINAL_NUM_SLURM_NODES \
     --account=$SLURM_ACCOUNT \
     --partition=$SLURM_PARTITION \
-    --time=4:0:0 \
+    --time=${SLURM_TIME:-1:0:0} \
     --job-name=$EXP_NAME \
     --gres=gpu:8 \
+    --comment="$SLURM_COMMENT" \
+    ${SLURM_EXCLUDE:+--exclude=$SLURM_EXCLUDE} \
     ray.sub
