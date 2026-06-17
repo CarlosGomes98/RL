@@ -28,7 +28,6 @@ TRANSFORMERS_OFFLINE=1 \
 HF_TOKEN=$HF_TOKEN \
 WANDB_API_KEY=$WANDB_API_KEY \
 NRL_MEGATRON_CHECKPOINT_DIR=$NRL_MEGATRON_CHECKPOINT_DIR \
-NEMO_GYM_SWE_WORKSPACE_ROOT=$NEMO_GYM_SWE_WORKSPACE_ROOT \
 uv run python examples/nemo_gym/run_grpo_nemo_gym.py \
     ++cluster.num_nodes=$NUM_ACTOR_NODES \
     ++logger.wandb.name=$EXP_NAME \
