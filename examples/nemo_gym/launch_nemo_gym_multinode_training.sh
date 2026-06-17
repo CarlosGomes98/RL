@@ -55,19 +55,22 @@ EOF
 
 echo -e "Running command:\n$COMMAND"
 
-mount=$(findmnt -n -o TARGET --target .)
-
-
 # OccupiedIdleGPUsJobReaper exemption: async (non-colocated) legitimately idles its
 # training-node GPU pool while the replay buffer fills from slow SWE reward computation,
 # which otherwise trips the idle-GPU reaper. Override via SLURM_COMMENT env if needed.
 SLURM_IDLE_EXEMPT_MINS="${SLURM_IDLE_EXEMPT_MINS:-120}"
 SLURM_COMMENT="${SLURM_COMMENT:-{\"OccupiedIdleGPUsJobReaper\":{\"exemptIdleTimeMins\":\"${SLURM_IDLE_EXEMPT_MINS}\",\"reason\":\"rl-rollout-warmup\",\"description\":\"NeMo-RL GRPO: training GPUs idle during rollout/SWE-reward buffer-fill\"}}}"
 
+
+MOUNTS="/lustre:/lustre,${HOST_HF_HOME}:${CONTAINER_REPO_LOCATION}/.cache,${OUT_DIR}/checkpoint:/checkpoint,${OUT_DIR}/logs:/logs"
+if [[ -n "${EXTRA_MOUNTS:-}" ]]; then
+    MOUNTS="${MOUNTS},${EXTRA_MOUNTS}"
+fi
+
+MOUNTS=$MOUNTS \
 COMMAND=$COMMAND \
 CONTAINER=$CONTAINER_IMAGE_PATH \
 CONTAINER_WORKDIR=$CONTAINER_REPO_LOCATION \
-MOUNTS=$mount:$mount,${HOST_HF_HOME}:${CONTAINER_REPO_LOCATION}/.cache,${OUT_DIR}/checkpoint:/checkpoint,${OUT_DIR}/logs:/logs \
 sbatch \
     --nodes=$NODES \
     --account=$SLURM_ACCOUNT \
