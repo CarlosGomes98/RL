@@ -12,35 +12,51 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+set -euo pipefail
 # ----- PARAMETERS -----
-# WANDB_API_KEY, HF_TOKEN, EXP_NAME, NUM_ACTOR_NODES, NUM_SLURM_NODES (optional), REPO_LOCATION, CONTAINER_IMAGE_PATH, SLURM_ACCOUNT, SLURM_PARTITION
+# WANDB_API_KEY, HF_TOKEN, EXP_NAME, RECIPE, TRAIN_NODES, GEN_NODES, REPO_LOCATION, CONTAINER_IMAGE_PATH, SLURM_ACCOUNT, SLURM_PARTITION
 
-# ray.sub needs to be launched from the NeMo-RL root directory
+TRAIN_NODES="${TRAIN_NODES:-16}"
+GEN_NODES="${GEN_NODES:-24}"
+NODES="${NODES:-$((TRAIN_NODES + GEN_NODES))}"
+CONTAINER_REPO_LOCATION="${CONTAINER_REPO_LOCATION:-/opt/nemo-rl}"
+RECIPE="${RECIPE:-examples/nemo_gym/grpo_qwen3_235b_swe_openhands_async.yaml}"
+
+# ray.sub is submitted from the host checkout, but training runs from the
+# baked checkout inside the container.
 cd $REPO_LOCATION
+OUT_DIR="$(pwd)/results/${EXP_NAME}"
+HOST_HF_HOME="${HF_HOME:-$(pwd)/.cache}"
+export BASE_LOG_DIR="${OUT_DIR}/logs"
+mkdir -p "${OUT_DIR}/logs" "${OUT_DIR}/checkpoint" "${HOST_HF_HOME}"
 
 # Construct the command
-read -r -d '' COMMAND <<EOF
-cd ${REPO_LOCATION}
+COMMAND=$(cat <<EOF
+cd ${CONTAINER_REPO_LOCATION}
 
-HF_HOME=$PWD/.cache/ \
+
+HF_HOME=${CONTAINER_REPO_LOCATION}/.cache \
 HF_HUB_OFFLINE=1 \
 TRANSFORMERS_OFFLINE=1 \
 HF_TOKEN=$HF_TOKEN \
 WANDB_API_KEY=$WANDB_API_KEY \
 NRL_MEGATRON_CHECKPOINT_DIR=$NRL_MEGATRON_CHECKPOINT_DIR \
-uv run python examples/nemo_gym/run_grpo_nemo_gym.py \
-    ++cluster.num_nodes=$NUM_ACTOR_NODES \
+NEMO_GYM_SWE_WORKSPACE_ROOT=/logs/nemo_gym/workspace \
+uv run examples/nemo_gym/run_grpo_nemo_gym.py \
+    --config ${RECIPE} \
+    ++cluster.num_nodes=$NODES \
+    ++policy.generation.colocated.resources.num_nodes=$GEN_NODES \
     ++logger.wandb.name=$EXP_NAME \
-    ++logger.log_dir=results/$EXP_NAME \
-    ++checkpointing.checkpoint_dir=results/$EXP_NAME \
+    ++logger.log_dir=/logs \
+    ++checkpointing.checkpoint_dir=/checkpoint \
     $@
 EOF
+)
 
 echo -e "Running command:\n$COMMAND"
 
 mount=$(findmnt -n -o TARGET --target .)
 
-FINAL_NUM_SLURM_NODES="${NUM_SLURM_NODES:-$NUM_ACTOR_NODES}"
 
 # OccupiedIdleGPUsJobReaper exemption: async (non-colocated) legitimately idles its
 # training-node GPU pool while the replay buffer fills from slow SWE reward computation,
@@ -50,9 +66,10 @@ SLURM_COMMENT="${SLURM_COMMENT:-{\"OccupiedIdleGPUsJobReaper\":{\"exemptIdleTime
 
 COMMAND=$COMMAND \
 CONTAINER=$CONTAINER_IMAGE_PATH \
-MOUNTS=$mount:$mount \
+CONTAINER_WORKDIR=$CONTAINER_REPO_LOCATION \
+MOUNTS=$mount:$mount,${HOST_HF_HOME}:${CONTAINER_REPO_LOCATION}/.cache,${OUT_DIR}/checkpoint:/checkpoint,${OUT_DIR}/logs:/logs \
 sbatch \
-    --nodes=$FINAL_NUM_SLURM_NODES \
+    --nodes=$NODES \
     --account=$SLURM_ACCOUNT \
     --partition=$SLURM_PARTITION \
     --time=${SLURM_TIME:-1:0:0} \

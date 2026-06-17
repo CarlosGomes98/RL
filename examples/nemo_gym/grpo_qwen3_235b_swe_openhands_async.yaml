@@ -305,6 +305,7 @@ env:
   should_use_nemo_gym: true
   should_log_nemo_gym_responses: false
   nemo_gym:
+    skip_venv_if_present: true
     rollout_max_attempts_to_avoid_lp_nan: 1
     is_trajectory_collection: false
     config_paths:
@@ -320,6 +321,7 @@ env:
           # 512 concurrent agent sessions ~= 64 per vLLM engine at 16 nodes.
           # Drop to 256 if generation thrashes on KV-cache preemption.
           concurrency: 128          # LEARNING: keep rollout wall-time down at bigger batch
+          base_results_dir: /logs/nemo_gym/swe_agents_train
           dataset_path: ${data.train.data_path}     # FILL (same as data.train.data_path)
           # FILL: apptainer image path template for task containers, e.g.
           # /PATH/TO/sif_images/xingyaoww_sweb.eval.x86_64.{instance_id}.sif
@@ -333,6 +335,7 @@ env:
           agent_max_turns: 15       # 15 is empirically safe on easy_l20; 20 grew context past 80k -> vLLM rejected a turn -> empty rollout -> ValueError crash
           swebench_agent_timeout: 1200
           concurrency: 128          # LEARNING: keep rollout wall-time down at bigger batch
+          base_results_dir: /logs/nemo_gym/swe_agents_val
           dataset_path: ${data.validation.data_path}       # FILL (same as data.validation.data_path)
           container_formatter: ${env.nemo_gym.swe_agents_train.responses_api_agents.swe_agents.container_formatter}  # FILL
 
