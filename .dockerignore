@@ -32,7 +32,9 @@
 # NeMo-Gym config and runner used by this image.
 !examples/
 !examples/nemo_gym/
+!examples/nemo_gym/grpo_qwen3_30b_swe_openhands_async.yaml
 !examples/nemo_gym/grpo_qwen3_235b_swe_openhands_async.yaml
+!examples/nemo_gym/grpo_qwen3_235b_swe_openhands_sync.yaml
 !examples/nemo_gym/launch_nemo_gym_multinode_training.sh
 !examples/nemo_gym/run_grpo_nemo_gym.py
 
