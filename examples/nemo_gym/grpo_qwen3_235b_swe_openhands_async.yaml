@@ -81,7 +81,7 @@ loss_fn:
   force_on_policy_ratio: true # ASYNC: rollouts are 1-step stale -> use IS-corrected PPO ratio
 
 checkpointing:
-  enabled: false    # TUNED: on, so we can resume after the 4h walltime
+  enabled: "${oc.decode:${oc.env:NRL_CHECKPOINTING_ENABLED,'true'}}"
   checkpoint_dir: "results/grpo-qwen3-235b-swe-openhands"  # launcher overrides per-experiment
   metric_name: "val:total_reward/mean"  # use "train:total_reward/mean" if val_period is large
   higher_is_better: true
