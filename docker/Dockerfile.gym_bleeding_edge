@@ -106,7 +106,7 @@ PY
   while IFS= read -r -d '' python_bin; do
     log "Repairing Ray in ${python_bin}"
     pip_install_for_python "$python_bin" --reinstall "ray[default]==${ray_version}" simplejson
-    pip_install_for_python "$python_bin" --no-deps tensordict
+    pip_install_for_python "$python_bin" --no-deps tensordict pyvers
     pip_install_for_python "$python_bin" --no-deps \
       "nvidia-resiliency-ext @ git+https://github.com/NVIDIA/nvidia-resiliency-ext.git@v0.6.0"
     "$python_bin" - <<'PY'
@@ -115,6 +115,7 @@ import ray
 
 print(f"worker ray={ray.__version__} from {getattr(ray, '__file__', '<unknown>')}")
 print(f"worker tensordict={importlib.metadata.version('tensordict')}")
+print(f"worker pyvers={importlib.metadata.version('pyvers')}")
 print(f"worker nvidia-resiliency-ext={importlib.metadata.version('nvidia-resiliency-ext')}")
 PY
   done < <(find "$ray_venv_root" -mindepth 2 -maxdepth 3 -path '*/bin/python' \( -type f -o -type l \) -print0)
