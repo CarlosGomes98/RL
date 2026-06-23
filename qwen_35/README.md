@@ -86,7 +86,19 @@ PP=1 or smaller GBS, should be explicit overrides.
 
 ## What the overlay changes
 
-The current overlay files are:
+The v0.6 overlay files live under `qwen_35/overrides`. Bleeding-edge-specific
+overlay files live under `qwen_35/overrides_bleeding_edge`.
+
+`examples/nemo_gym/launch_nemo_gym_multinode_training.sh` selects the overlay
+directory automatically:
+
+- container image paths containing `bleeding` use `qwen_35/overrides_bleeding_edge`
+- other container image paths use `qwen_35/overrides`
+
+Set `QWEN35_OVERLAY_DIR` to force a specific overlay directory, or
+`QWEN35_RUNTIME_OVERLAY=0` to mount only the Qwen configs.
+
+The overlay files are:
 
 - `nemo_rl/models/megatron/setup.py`
   - Carries the Megatron setup compatibility used by the Qwen 3.5 runs.

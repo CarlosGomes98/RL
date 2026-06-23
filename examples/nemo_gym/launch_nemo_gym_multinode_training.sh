@@ -236,7 +236,30 @@ esac
 if [[ "${_qwen35_should_mount}" == "1" ]]; then
     QWEN35_CONFIG_DIR="${QWEN35_CONFIG_DIR:-${REPO_LOCATION}/qwen_35/configs}"
     QWEN35_BASE_CONFIG_DIR="${QWEN35_BASE_CONFIG_DIR:-${REPO_LOCATION}/examples/nemo_gym}"
-    QWEN35_OVERLAY_DIR="${QWEN35_OVERLAY_DIR:-${REPO_LOCATION}/qwen_35/overrides}"
+    _qwen35_default_overlay_dir="${REPO_LOCATION}/qwen_35/overrides"
+    case "${CONTAINER_IMAGE_PATH}" in
+        *bleeding*|*Bleeding*)
+            _qwen35_default_overlay_dir="${REPO_LOCATION}/qwen_35/overrides_bleeding_edge"
+            ;;
+    esac
+    QWEN35_OVERLAY_DIR="${QWEN35_OVERLAY_DIR:-${_qwen35_default_overlay_dir}}"
+    _qwen35_runtime_overlay_mode="${QWEN35_RUNTIME_OVERLAY:-auto}"
+    _qwen35_should_mount_runtime_overlay=0
+    case "${_qwen35_runtime_overlay_mode}" in
+        0|false|False|no|NO)
+            _qwen35_should_mount_runtime_overlay=0
+            ;;
+        1|true|True|yes|YES)
+            _qwen35_should_mount_runtime_overlay=1
+            ;;
+        auto)
+            _qwen35_should_mount_runtime_overlay=1
+            ;;
+        *)
+            echo "Error: QWEN35_RUNTIME_OVERLAY must be auto, 0, or 1; got '${_qwen35_runtime_overlay_mode}'." >&2
+            exit 1
+            ;;
+    esac
     QWEN35_MOUNT_STAGE_DIR="${QWEN35_MOUNT_STAGE_DIR:-${OUT_DIR}/qwen_35_mounts}"
     QWEN35_STAGED_CONFIG_DIR="${QWEN35_MOUNT_STAGE_DIR}/configs"
     QWEN35_STAGED_BASE_CONFIG_DIR="${QWEN35_MOUNT_STAGE_DIR}/examples_nemo_gym"
@@ -248,24 +271,28 @@ if [[ "${_qwen35_should_mount}" == "1" ]]; then
     _qwen35_stage_yaml_files "${QWEN35_BASE_CONFIG_DIR}" "${QWEN35_STAGED_BASE_CONFIG_DIR}" "Qwen 3.5 base config"
     _qwen35_mount_tree "${QWEN35_STAGED_BASE_CONFIG_DIR}" "${CONTAINER_REPO_LOCATION}/examples/nemo_gym" "Qwen 3.5 staged base config"
 
-    _qwen35_overlay_dsts=(
-        "nemo_rl/environments/nemo_gym.py"
-        "nemo_rl/models/generation/vllm/vllm_worker_async.py"
-        "nemo_rl/models/megatron/setup.py"
-        "nemo_rl/models/policy/workers/megatron_policy_worker.py"
-        "3rdparty/Gym-workspace/Gym/responses_api_models/vllm_model/app.py"
-    )
-    for _qwen35_dst_rel in "${_qwen35_overlay_dsts[@]}"; do
-        _qwen35_stage_file "${QWEN35_OVERLAY_DIR}/${_qwen35_dst_rel}" "${QWEN35_STAGED_OVERLAY_DIR}" "${_qwen35_dst_rel}" "Qwen 3.5 overlay"
-        _qwen35_mount_file "${QWEN35_STAGED_OVERLAY_DIR}/${_qwen35_dst_rel}" "${CONTAINER_REPO_LOCATION}/${_qwen35_dst_rel}" "Qwen 3.5 overlay"
-    done
-    unset _qwen35_dst_rel _qwen35_overlay_dsts
+    if [[ "${_qwen35_should_mount_runtime_overlay}" == "1" ]]; then
+        _qwen35_overlay_dsts=(
+            "nemo_rl/environments/nemo_gym.py"
+            "nemo_rl/models/generation/vllm/vllm_worker_async.py"
+            "nemo_rl/models/megatron/setup.py"
+            "nemo_rl/models/policy/workers/megatron_policy_worker.py"
+            "3rdparty/Gym-workspace/Gym/responses_api_models/vllm_model/app.py"
+        )
+        for _qwen35_dst_rel in "${_qwen35_overlay_dsts[@]}"; do
+            _qwen35_stage_file "${QWEN35_OVERLAY_DIR}/${_qwen35_dst_rel}" "${QWEN35_STAGED_OVERLAY_DIR}" "${_qwen35_dst_rel}" "Qwen 3.5 overlay"
+            _qwen35_mount_file "${QWEN35_STAGED_OVERLAY_DIR}/${_qwen35_dst_rel}" "${CONTAINER_REPO_LOCATION}/${_qwen35_dst_rel}" "Qwen 3.5 overlay"
+        done
+        unset _qwen35_dst_rel _qwen35_overlay_dsts
+    else
+        echo "Skipping Qwen 3.5 runtime source overlays for ${CONTAINER_IMAGE_PATH} (QWEN35_RUNTIME_OVERLAY=${_qwen35_runtime_overlay_mode})"
+    fi
 
     # Defaults consumed by the Qwen-only files. They are harmless for
     # non-Qwen jobs because these files are not mounted for those recipes.
     export NEMO_RL_QWEN35_TRUNCATE_PROMPT_TOKENS="${NEMO_RL_QWEN35_TRUNCATE_PROMPT_TOKENS:-${QWEN35_TRUNCATE_PROMPT_TOKENS:-65535}}"
 fi
-unset _qwen35_overlay_mode _qwen35_recipe _qwen35_should_mount
+unset _qwen35_overlay_mode _qwen35_recipe _qwen35_should_mount _qwen35_default_overlay_dir _qwen35_runtime_overlay_mode _qwen35_should_mount_runtime_overlay
 unset -f _qwen35_append_extra_mount _qwen35_stage_tree _qwen35_mount_tree _qwen35_stage_file _qwen35_mount_file _qwen35_stage_yaml_files
 
 # Construct the command
