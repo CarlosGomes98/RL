@@ -259,3 +259,7 @@ PY
 EOF
 
 WORKDIR /opt/nemo-rl
+
+# The gym base image appends setup-specific env hooks under /opt/nemo-rl to
+# /root/.profile. Replacing /opt/nemo-rl makes those hooks stale.
+RUN sed -i '\#/opt/nemo-rl/3rdparty/Gym-workspace/Gym/responses_api_agents/swe_agents/.*/uv/env#d' /root/.profile
