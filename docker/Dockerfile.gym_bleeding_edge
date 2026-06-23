@@ -255,7 +255,7 @@ except Exception as exc:
 PY
 } | tee "$BLEEDING_EDGE_BUILD_METADATA_DIR/import_smoke.log"
 
-python tools/generate_fingerprint.py > /opt/nemo_rl_container_fingerprint
+"$PYTHON_BIN" "$CONTAINER_ROOT/tools/generate_fingerprint.py" > /opt/nemo_rl_container_fingerprint
 EOF
 
 WORKDIR /opt/nemo-rl
