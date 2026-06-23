@@ -40,6 +40,7 @@
 # Dockerfile and support files.
 !docker/
 !docker/Dockerfile.gym_v0.6.0
+!docker/Dockerfile.gym_bleeding_edge
 !docker/gym/
 !docker/gym/**
 
