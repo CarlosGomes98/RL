@@ -86,13 +86,14 @@ PP=1 or smaller GBS, should be explicit overrides.
 
 ## What the overlay changes
 
-The v0.6 overlay files live under `qwen_35/overrides`. Bleeding-edge-specific
-overlay files live under `qwen_35/overrides_bleeding_edge`.
+The v0.6 overlay files live under `qwen_35/overrides`. Newer-vLLM overlay files
+for bleeding-edge and nightly images live under `qwen_35/overrides_bleeding_edge`.
 
 `examples/nemo_gym/launch_nemo_gym_multinode_training.sh` selects the overlay
 directory automatically:
 
-- container image paths containing `bleeding` use `qwen_35/overrides_bleeding_edge`
+- container image paths containing `bleeding`, `nightly`, or the known
+  `bd8a540-55533441` nightly tag use `qwen_35/overrides_bleeding_edge`
 - other container image paths use `qwen_35/overrides`
 
 Set `QWEN35_OVERLAY_DIR` to force a specific overlay directory, or

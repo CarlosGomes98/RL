@@ -238,7 +238,7 @@ if [[ "${_qwen35_should_mount}" == "1" ]]; then
     QWEN35_BASE_CONFIG_DIR="${QWEN35_BASE_CONFIG_DIR:-${REPO_LOCATION}/examples/nemo_gym}"
     _qwen35_default_overlay_dir="${REPO_LOCATION}/qwen_35/overrides"
     case "${CONTAINER_IMAGE_PATH}" in
-        *bleeding*|*Bleeding*)
+        *bleeding*|*Bleeding*|*nightly*|*Nightly*|*bd8a540*|*55533441*)
             _qwen35_default_overlay_dir="${REPO_LOCATION}/qwen_35/overrides_bleeding_edge"
             ;;
     esac
