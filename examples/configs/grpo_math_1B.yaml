@@ -14,6 +14,7 @@ grpo:
   overlong_filtering: false
   max_val_samples: 256
   val_batch_size: 256
+  num_val_generations_per_prompt: 1
   seed: 42
   use_dynamic_sampling: false
   dynamic_sampling_max_gen_batches: 10
