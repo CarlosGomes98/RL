@@ -17,6 +17,7 @@ grpo:
   max_num_epochs: 100
   num_prompts_per_step: 16          # LEARNING: distinct SWE tasks per step (gradient diversity)
   num_generations_per_prompt: 8     # ASYNC: 16*8=128 batch; DP1 training so keep per-replica load modest
+  num_ppo_epochs: 1
   max_rollout_turns: 1              # unused on the NeMo-Gym path (gym handles multi-turn)
   max_num_steps: 50                 # LEARNING: upper bound; walltime will cut it off
   normalize_rewards: true
@@ -360,4 +361,3 @@ logger:
 cluster:
   gpus_per_node: 8
   num_nodes: 16   # 16 = DP1 minimum; 32 = DP2 for ~2x training throughput
-

@@ -147,6 +147,7 @@ class ValidationGenerationConfig(TypedDict):
 class GRPOConfig(TypedDict):
     num_prompts_per_step: int
     num_generations_per_prompt: int
+    num_ppo_epochs: NotRequired[int]
     max_num_epochs: int
     max_num_steps: int
     max_rollout_turns: int
@@ -221,6 +222,71 @@ class MasterConfig(TypedDict):
     checkpointing: CheckpointingConfig
 
 
+def _validate_grpo_extensions_config(master_config: MasterConfig) -> None:
+    num_ppo_epochs = int(master_config["grpo"].get("num_ppo_epochs", 1))
+    assert num_ppo_epochs >= 1, "grpo.num_ppo_epochs must be >= 1"
+
+    if num_ppo_epochs > 1:
+        assert not master_config["loss_fn"].get("force_on_policy_ratio", False), (
+            "grpo.num_ppo_epochs > 1 is incompatible with "
+            "loss_fn.force_on_policy_ratio=True"
+        )
+
+
+def _train_policy_for_ppo_epochs(
+    policy: ColocatablePolicyInterface,
+    train_data: BatchedDataDict[Any],
+    loss_fn: LossFunction,
+    num_ppo_epochs: int,
+    timer: Timer,
+) -> dict[str, Any]:
+    train_results_by_epoch = []
+    for ppo_epoch in range(num_ppo_epochs):
+        if num_ppo_epochs > 1:
+            print(f"▶ PPO epoch {ppo_epoch + 1}/{num_ppo_epochs}...", flush=True)
+        train_results_by_epoch.append(
+            policy.train(
+                train_data,
+                loss_fn,
+                timer=timer,
+            )
+        )
+
+    if num_ppo_epochs == 1:
+        return train_results_by_epoch[0]
+
+    aggregated = dict(train_results_by_epoch[-1])
+    losses = [result["loss"] for result in train_results_by_epoch]
+    grad_norms = [result["grad_norm"] for result in train_results_by_epoch]
+
+    if torch.is_tensor(losses[0]):
+        aggregated["loss"] = torch.stack(
+            [loss.detach().to(dtype=torch.float32).cpu() for loss in losses]
+        ).mean()
+    else:
+        aggregated["loss"] = sum(losses) / len(losses)
+
+    if torch.is_tensor(grad_norms[0]):
+        aggregated["grad_norm"] = torch.stack(
+            [
+                grad_norm.detach().to(dtype=torch.float32).cpu()
+                for grad_norm in grad_norms
+            ]
+        ).mean()
+    else:
+        aggregated["grad_norm"] = sum(grad_norms) / len(grad_norms)
+
+    all_mb_metrics: dict[str, list[Any]] = {}
+    for result in train_results_by_epoch:
+        for key, values in result["all_mb_metrics"].items():
+            if key == "loss":
+                continue
+            all_mb_metrics.setdefault(key, []).extend(values)
+    aggregated["all_mb_metrics"] = all_mb_metrics
+
+    return aggregated
+
+
 # ===============================================================================
 # Setup & Initialization
 # ===============================================================================
@@ -261,6 +327,8 @@ def setup(
     data_config = master_config["data"]
     logger_config = master_config["logger"]
     cluster_config = master_config["cluster"]
+    _validate_grpo_extensions_config(master_config)
+    num_ppo_epochs = int(grpo_config.get("num_ppo_epochs", 1))
 
     assert generation_config is not None, (
         "A generation config in the PolicyConfig is required for GRPO"
@@ -567,7 +635,7 @@ def setup(
         total_train_iters = min(
             grpo_config["max_num_steps"],
             grpo_config["max_num_epochs"] * train_sample_count,
-        )
+        ) * num_ppo_epochs
         policy_config["megatron_cfg"]["train_iters"] = total_train_iters
 
     # Define initialization functions that will be used in all paths
@@ -1447,6 +1515,8 @@ def grpo_train(
     mlperf_logger: Optional[MLPerfGRPOLogger] = None,
 ) -> None:
     """Run GRPO training algorithm."""
+    _validate_grpo_extensions_config(master_config)
+    num_ppo_epochs = int(master_config["grpo"].get("num_ppo_epochs", 1))
     timer = Timer()
     timeout = TimeoutChecker(
         timeout=master_config["checkpointing"]["checkpoint_must_save_by"],
@@ -1960,9 +2030,11 @@ def grpo_train(
 
                 print("▶ Training policy...", flush=True)
                 with timer.time("policy_training"):
-                    train_results = policy.train(
-                        train_data,
-                        loss_fn,
+                    train_results = _train_policy_for_ppo_epochs(
+                        policy=policy,
+                        train_data=train_data,
+                        loss_fn=loss_fn,
+                        num_ppo_epochs=num_ppo_epochs,
                         timer=timer,
                     )
 
@@ -2613,6 +2685,9 @@ def async_grpo_train(
         max_trajectory_age_steps: Maximum age (in training steps) for trajectories to be used in training
         mlperf_logger: Optional MLPerf GRPO logger
     """
+    _validate_grpo_extensions_config(master_config)
+    num_ppo_epochs = int(master_config["grpo"].get("num_ppo_epochs", 1))
+
     # Ensure we are running with a compatible async generation backend
     assert _should_use_async_rollouts(master_config), (
         "Async GRPO requires vLLM backend with vllm_cfg.async_engine=True. "
@@ -3087,9 +3162,11 @@ def async_grpo_train(
 
                 print("▶ Training policy...")
                 with timer.time("policy_training"):
-                    train_results = policy.train(
-                        train_data,
-                        loss_fn,
+                    train_results = _train_policy_for_ppo_epochs(
+                        policy=policy,
+                        train_data=train_data,
+                        loss_fn=loss_fn,
+                        num_ppo_epochs=num_ppo_epochs,
                         timer=timer,
                     )
 
