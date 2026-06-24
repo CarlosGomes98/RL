@@ -160,6 +160,7 @@ class GRPOConfig(TypedDict):
     val_at_end: bool
     max_val_samples: int
     validation_generation: NotRequired[ValidationGenerationConfig | None]
+    num_val_generations_per_prompt: NotRequired[int]
     skip_reference_policy_logprobs_calculation: NotRequired[bool]
     seed: int
     async_grpo: NotRequired[AsyncGRPOConfig]
@@ -222,6 +223,20 @@ class MasterConfig(TypedDict):
     logger: GRPOLoggerConfig
     cluster: ClusterConfig
     checkpointing: CheckpointingConfig
+
+
+def _calculate_observed_pass_at_k(
+    total_rewards: list[float], num_val_generations_per_prompt: int
+) -> float:
+    if not total_rewards:
+        return 0.0
+
+    rewards_t = torch.tensor(total_rewards, dtype=torch.float32)
+    assert rewards_t.numel() % num_val_generations_per_prompt == 0, (
+        "Validation rewards must be divisible by grpo.num_val_generations_per_prompt"
+    )
+    rewards_per_prompt = rewards_t.view(-1, num_val_generations_per_prompt)
+    return (rewards_per_prompt > 0).any(dim=1).float().mean().item()
 
 
 # ===============================================================================
@@ -2521,6 +2536,9 @@ def validate(
     timer = Timer()
     with timer.time("total_validation_time"):
         print(f"▶ Starting validation at step {step}...", flush=True)
+        num_val_generations_per_prompt = int(
+            master_config["grpo"].get("num_val_generations_per_prompt", 1)
+        )
 
         total_rewards = []
         total_lengths = []
@@ -2532,6 +2550,7 @@ def validate(
         assert validation_generation_config is None or use_nemo_gym, (
             "grpo.validation_generation is only supported for NeMo-Gym validation."
         )
+        additional_metrics_to_report = dict()
 
         max_batches = (
             master_config["grpo"]["max_val_samples"]
@@ -2541,7 +2560,11 @@ def validate(
             if batch_idx >= max_batches:
                 break
 
-            additional_metrics_to_report = dict()
+            if num_val_generations_per_prompt > 1:
+                val_batch = val_batch.repeat_interleave(
+                    num_val_generations_per_prompt
+                )
+
             # Generate responses (updates the LLMMessageLogType in batch_with_msg_logs)
             # Use async rollouts if vLLM async engine is enabled
             # We cascade NeMo-Gym first since NeMo-Gym also uses async rollouts.
@@ -2617,8 +2640,14 @@ def validate(
         val_metrics = {
             "accuracy": accuracy,
             "avg_length": avg_length,
-            **additional_metrics_to_report,
         }
+        if num_val_generations_per_prompt > 1:
+            pass_metric_name = f"pass@{num_val_generations_per_prompt}"
+            val_metrics[pass_metric_name] = _calculate_observed_pass_at_k(
+                total_rewards,
+                num_val_generations_per_prompt,
+            )
+        val_metrics.update(additional_metrics_to_report)
 
         # Print sample conversations only once at the end of validation
         try:
@@ -2642,6 +2671,8 @@ def validate(
     # Print summary of validation results
     print("\n📊 Validation Results:")
     print(f"    • Accuracy: {accuracy:.4f}")
+    if num_val_generations_per_prompt > 1:
+        print(f"    • {pass_metric_name}: {val_metrics[pass_metric_name]:.4f}")
     print(f"    • Average response length: {avg_length:.1f} tokens")
     print(f"    • Samples processed: {len(total_rewards)}", flush=True)
 

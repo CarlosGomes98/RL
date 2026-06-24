@@ -10,8 +10,9 @@ grpo:
   val_at_start: true
   val_at_end: false
   overlong_filtering: false
-  max_val_samples: null   # inferred from size of val dataset. for multi evals, repeat val ds via `num_repeats` in `ng_prepare_data`.
+  max_val_samples: null   # inferred from size of val dataset.
   val_batch_size: null
+  num_val_generations_per_prompt: 1
   seed: 42
   use_dynamic_sampling: false
   dynamic_sampling_max_gen_batches: 10
