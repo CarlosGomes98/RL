@@ -4,7 +4,7 @@
 # force_on_policy_ratio), re-parallelized for 235B. Key schema is aligned with
 # THIS checkout's working gym recipe (grpo_workplace_assistant_nemotron_nano_v2_9b.yaml)
 # -- fork-only keys from the original run (best_at_k, invalid_tool_call_strategy,
-# num_val_generations_per_prompt, data.*_jsonl_fpath, ...) have been removed/translated.
+# data.*_jsonl_fpath, ...) have been removed/translated.
 # Assumes H100/H200 nodes with 8 GPUs.
 #
 # GPU math (training): one model replica = TP4 x CP4 x PP8 = 128 GPUs = 16 nodes.
@@ -36,6 +36,7 @@ grpo:
   validation_generation:
     temperature: 0.0
     top_p: 1.0
+  num_val_generations_per_prompt: 1
   use_dynamic_sampling: false
   dynamic_sampling_max_gen_batches: 10
   batch_multiplier: 1
