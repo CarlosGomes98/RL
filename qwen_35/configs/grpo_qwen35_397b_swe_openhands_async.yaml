@@ -139,6 +139,11 @@ env:
     swe_agents_train:
       responses_api_agents:
         swe_agents:
+          # The Gym image prebuilds OpenHands at this commit and mounts that
+          # tree read-only for each SWE task. Keep runtime in sync with the
+          # baked checkout so run_infer.sh does not try to checkout the older
+          # Gym default commit inside the read-only task container.
+          agent_framework_commit: 0d766ad06b2be64a42e6f0175b9ebcc4a06599d9
           agent_max_turns: 15
           concurrency: 128
           swebench_agent_timeout: 360
@@ -149,6 +154,7 @@ env:
     swe_agents_val:
       responses_api_agents:
         swe_agents:
+          agent_framework_commit: ${env.nemo_gym.swe_agents_train.responses_api_agents.swe_agents.agent_framework_commit}
           agent_max_turns: 15
           concurrency: 128
           swebench_agent_timeout: 180
