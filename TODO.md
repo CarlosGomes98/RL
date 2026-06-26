@@ -1,0 +1,6 @@
+- [x] Replace local invalid tool-call detection with the main branch detector.
+- [x] Emit swe_agent assistant-call turns as a metric alongside Gym turns.
+- [x] Backport gen_output token accounting for agent tool calls.
+- [x] Require finish for SWE task-completion reward.
+- [x] Backport invalid tool-call advantage penalty.
+- [x] Backport async GRPO overlong filtering.
