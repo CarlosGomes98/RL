@@ -12,8 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import asyncio
+import json
 from pathlib import Path
-from typing import Any, Dict, List, TypedDict
+from typing import Any, Dict, List, NotRequired, TypedDict
 
 import aiohttp
 import ray
@@ -29,6 +30,59 @@ class NemoGymConfig(TypedDict):
     model_name: str
     base_urls: List[str]
     initial_global_config_dict: Dict[str, Any]
+    invalid_tool_call_patterns: NotRequired[
+        List[str] | None
+    ]  # Substrings in assistant text content that indicate an invalid tool call
+
+
+DEFAULT_INVALID_TOOL_CALL_PATTERNS = [
+    "<tool_call>",
+    "</tool_call>",
+    "<function_call>",
+    "</function_call>",
+    "<TOOLCALL>",
+    "</TOOLCALL>",
+]
+
+
+def _has_malformed_function_call_arguments(output_item_dict: dict[str, Any]) -> bool:
+    """Return whether a structured function_call has malformed JSON arguments."""
+    if output_item_dict.get("type") != "function_call":
+        return False
+
+    arguments = output_item_dict.get("arguments")
+    if not isinstance(arguments, str):
+        return True
+
+    try:
+        json.loads(arguments)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return True
+
+    return False
+
+
+def _detect_invalid_tool_call(
+    output_item_dict: dict[str, Any],
+    invalid_tool_call_patterns: list[str] | None = None,
+) -> bool:
+    """Flag a NeMo-Gym output item as an invalid tool call."""
+    invalid_tool_call_patterns = (
+        invalid_tool_call_patterns or DEFAULT_INVALID_TOOL_CALL_PATTERNS
+    )
+    is_invalid_tool_call = _has_malformed_function_call_arguments(output_item_dict)
+
+    if (
+        "content" not in output_item_dict
+        or len(output_item_dict["content"]) == 0
+        or "text" not in output_item_dict["content"][0]
+    ):
+        return is_invalid_tool_call
+
+    assistant_message_content = output_item_dict["content"][0]["text"]
+    return is_invalid_tool_call or any(
+        pattern in assistant_message_content for pattern in invalid_tool_call_patterns
+    )
 
 
 @ray.remote(max_restarts=-1, max_task_retries=-1)  # pragma: no cover
@@ -245,20 +299,13 @@ Output prompt token IDs: {output_item_dict["prompt_token_ids"]}
                     ),
                 }
             )
-            # Flag a dropped/unparseable tool call so GRPO can apply
-            # grpo.invalid_tool_call_strategy. When the tool parser (e.g. hermes) successfully
-            # parses an assistant tool call, vLLM strips the <tool_call>...</tool_call> tags out
-            # of the message `content` and moves the call into the structured tool_calls field. If
-            # those raw tags survive in `content`, the parser failed (e.g. the model stuffed an
-            # un-escaped code patch into the JSON args -- the hermes-on-Instruct failure mode) and
-            # the call was dropped. The marker is hermes-specific; XML parsers (qwen3_coder) never
-            # emit these tags, so it stays False there and the strategy is inert.
-            is_invalid_tool_call = False
-            content = output_item_dict.get("content")
-            if content and isinstance(content[0], dict) and content[0].get("text"):
-                assistant_text = content[0]["text"]
-                if "<tool_call>" in assistant_text or "</tool_call>" in assistant_text:
-                    is_invalid_tool_call = True
+            # Valid tool calls go through the structured API and get executed by
+            # NeMo-Gym. If tool call patterns appear in text content instead, or
+            # structured function_call arguments are malformed, flag the turn.
+            is_invalid_tool_call = _detect_invalid_tool_call(
+                output_item_dict,
+                invalid_tool_call_patterns=self.cfg.get("invalid_tool_call_patterns"),
+            )
 
             nemo_rl_message_log.append(
                 {
