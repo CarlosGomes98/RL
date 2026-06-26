@@ -31,6 +31,7 @@ ENV NEMO_GYM_VENV_DIR=/opt/gym_venvs
 COPY docker/gym/mlperf-gym.patch /tmp/mlperf-gym.patch
 COPY docker/gym/qwen35-gym-vllm-model.patch /tmp/qwen35-gym-vllm-model.patch
 COPY docker/gym/mlperf-gym-finish-reward.patch /tmp/mlperf-gym-finish-reward.patch
+COPY docker/gym/mlperf-gym-tool-call-output.patch /tmp/mlperf-gym-tool-call-output.patch
 COPY docker/gym/prefetch_venvs.py /opt/nemo-rl/examples/nemo_gym/prefetch_venvs.py
 
 # Install Apptainer in an architecture-aware way. The older Dockerfile.gym used an
@@ -61,11 +62,13 @@ COPY . /opt/nemo-rl
 # - parent directory creation for apptainer logs
 # - R2E-Gym dependency repair
 # - SWE sample masking for incomplete or timed-out agent runs
+# - function_call response splitting for generated tool-call tokens
 RUN <<"EOF" bash -exu
 cd /opt/nemo-rl/3rdparty/Gym-workspace/Gym
 for patch in \
     /tmp/mlperf-gym.patch \
-    /tmp/mlperf-gym-finish-reward.patch
+    /tmp/mlperf-gym-finish-reward.patch \
+    /tmp/mlperf-gym-tool-call-output.patch
 do
     if git apply --check "$patch"; then
         git apply "$patch"

@@ -1,0 +1,82 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Jeremi Piotrowski <jpiotrowski@nvidia.com>
+Date: Fri, 26 Jun 2026 12:02:00 +0200
+Subject: [PATCH 3/3] Backport Gym function-call output splitting
+
+Backport the Gym response-splitting behavior from upstream Gym main as
+a third Gym patch applied after the base and finish-reward patches. A
+function_call item now starts response output instead of being kept in
+input history, so SWE/OpenHands tool-call-only assistant turns remain
+in response.output and their token ids flow into NeMo RL training data
+and generated-token metrics.
+
+Upstream: 44b06fc4a3fd318df9e27a2360d15a130dd8dd2b
+
+---
+diff --git a/responses_api_models/vllm_model/app.py b/responses_api_models/vllm_model/app.py
+index 4f56c30..f44144f 100644
+--- a/responses_api_models/vllm_model/app.py
++++ b/responses_api_models/vllm_model/app.py
+@@ -807,10 +807,15 @@ def split_responses_input_output_items(
+         return [], []
+ 
+     for i, item in enumerate(items):
+-        if getattr(item, "role", None) == "assistant" or getattr(item, "type", None) in {
+-            "reasoning",
+-            "reasoning_item",
+-        }:
++        if (
++            getattr(item, "role", None) == "assistant"
++            or getattr(item, "type", None)
++            in {
++                "reasoning",
++                "reasoning_item",
++            }
++            or getattr(item, "type", None) in ("function_call",)
++        ):
+             break
+ 
+     return items[:i], items[i:]
+diff --git a/responses_api_models/vllm_model/tests/test_app.py b/responses_api_models/vllm_model/tests/test_app.py
+index 51eff14..4222fdc 100644
+--- a/responses_api_models/vllm_model/tests/test_app.py
++++ b/responses_api_models/vllm_model/tests/test_app.py
+@@ -54,6 +54,7 @@ from responses_api_models.vllm_model.app import (
+     VLLMConverter,
+     VLLMModel,
+     VLLMModelConfig,
++    split_responses_input_output_items,
+ )
+ 
+ 
+@@ -2499,5 +2500,28 @@ class TestApp:
+         actual_messages = mock_method.call_args.kwargs["messages"]
+         assert expected_messages == actual_messages
+ 
+ 
++def test_split_responses_treats_function_call_as_output() -> None:
++    input_item = NeMoGymEasyInputMessage(
++        role="user",
++        content=[{"type": "input_text", "text": "Fix the bug."}],
++        type="message",
++    )
++    function_call = NeMoGymResponseFunctionToolCall(
++        call_id="call_123",
++        type="function_call",
++        name="execute_bash",
++        arguments='{"cmd": "pytest"}',
++        status="completed",
++        id="call_123",
++    )
++
++    input_items, output_items = split_responses_input_output_items(
++        [input_item, function_call]
++    )
++
++    assert input_items == [input_item]
++    assert output_items == [function_call]
++
++
+ class TestVLLMConverter:
+     def setup_method(self, _):
+         self.converter = VLLMConverter(return_token_id_information=False)
