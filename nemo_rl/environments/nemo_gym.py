@@ -338,7 +338,7 @@ Output prompt token IDs: {output_item_dict["prompt_token_ids"]}
             print(
                 f"  [invalid-tool-call] rollout produced {n_invalid_tool_calls} "
                 f"unparseable tool-call turn(s) (<tool_call> tags survived in content; "
-                f"flagged for grpo.invalid_tool_call_strategy)",
+                f"flagged for grpo.invalid_tool_call_advantage)",
                 flush=True,
             )
 
