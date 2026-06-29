@@ -105,6 +105,8 @@ uv pip install --python "${UV_PROJECT_ENVIRONMENT}/bin/python" --no-deps -e /opt
     "${UV_PROJECT_ENVIRONMENT}/bin/python" -m pip install --upgrade --only-binary=:all: --no-deps \
         "nvidia-modelopt>=0.39.0" \
         "pulp<4.0"
+    "${UV_PROJECT_ENVIRONMENT}/bin/python" -m pip install --upgrade --only-binary=:all: \
+        "onnxscript"
     "${UV_PROJECT_ENVIRONMENT}/bin/python" -m pip install --upgrade --only-binary=:all: --no-deps \
         "nvidia-cuda-nvcc==13.0.88" \
         "nvidia-cuda-crt==13.0.88" \
