@@ -96,7 +96,7 @@ fi
 env \
     UV_TORCH_BACKEND="${NEMO_GYM_CUDA}" \
     UV_LINK_MODE=copy \
-    uv sync --extra nemo_gym --extra mcore --extra automodel
+    uv sync --extra nemo_gym --extra mcore
 
 CUDNN_DIR=$(python -c "import pathlib,sysconfig; cudnn=pathlib.Path(sysconfig.get_paths()['purelib'])/'nvidia'/'cudnn'; print(cudnn if cudnn.exists() else '')")
 if [[ -n "${CUDNN_DIR}" ]]; then
@@ -143,7 +143,7 @@ env \
     UV_TORCH_BACKEND="${NEMO_GYM_CUDA}" \
     UV_LINK_MODE=hardlink \
     "${UV_OVERRIDE_ARGS[@]}" \
-    uv run --extra nemo_gym --extra mcore --extra automodel python examples/nemo_gym/prefetch_venvs.py ${NEMO_GYM_PREFETCH_CONFIGS}
+    uv run --extra nemo_gym --extra mcore python examples/nemo_gym/prefetch_venvs.py ${NEMO_GYM_PREFETCH_CONFIGS}
 
 rm -f "${GYM_VLLM_OVERRIDE:-}"
 EOF
