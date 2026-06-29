@@ -137,6 +137,8 @@ PY
 mkdir -p "${CUDA_HOME}/include" "${CUDA_HOME}/lib"
 shopt -s nullglob
 for component_dir in "${NVIDIA_SITE}"/*; do
+    [[ -d "${component_dir}" ]] || continue
+    [[ "${component_dir}" != "${CUDA_HOME}" ]] || continue
     if [[ -d "${component_dir}/lib" ]]; then
         libs=("${component_dir}/lib"/lib*)
         if (( ${#libs[@]} )); then
