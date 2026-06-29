@@ -152,6 +152,14 @@ for versioned_lib in "${CUDA_HOME}/lib"/lib*.so.[0-9]*; do
     [[ -e "${unversioned_lib}" || -L "${unversioned_lib}" ]] && continue
     ln -s "${versioned_lib##*/}" "${unversioned_lib}"
 done
+for cuda_header in nvml.h cuda_profiler_api.h; do
+    [[ -e "${CUDA_HOME}/include/${cuda_header}" || -L "${CUDA_HOME}/include/${cuda_header}" ]] && continue
+    for header_source in /usr/local/cuda*/targets/*/include/"${cuda_header}" /usr/local/cuda*/include/"${cuda_header}" /usr/include/"${cuda_header}"; do
+        [[ -e "${header_source}" ]] || continue
+        ln -s "${header_source}" "${CUDA_HOME}/include/${cuda_header}"
+        break
+    done
+done
 shopt -u nullglob
 for cuda_lib_dir in "${CUDA_HOME}/lib" "${CUDA_HOME}/lib64"; do
     if [[ ! -e "${cuda_lib_dir}/libcudart.so" && -e "${cuda_lib_dir}/libcudart.so.13" ]]; then
