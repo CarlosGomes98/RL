@@ -139,15 +139,18 @@ shopt -s nullglob
 for component_dir in "${NVIDIA_SITE}"/*; do
     [[ -d "${component_dir}" ]] || continue
     [[ "${component_dir}" != "${CUDA_HOME}" ]] || continue
-    if [[ -d "${component_dir}/lib" ]]; then
-        libs=("${component_dir}/lib"/lib*)
-        if (( ${#libs[@]} )); then
-            ln -sf "${libs[@]}" "${CUDA_HOME}/lib/"
-        fi
-    fi
     if [[ -d "${component_dir}/include" ]]; then
-        find "${component_dir}/include" -mindepth 1 -maxdepth 1 -exec ln -sfn {} "${CUDA_HOME}/include/" \;
+        for include_entry in "${component_dir}/include"/*; do
+            include_target="${CUDA_HOME}/include/${include_entry##*/}"
+            [[ -e "${include_target}" || -L "${include_target}" ]] && continue
+            ln -s "${include_entry}" "${include_target}"
+        done
     fi
+done
+for versioned_lib in "${CUDA_HOME}/lib"/lib*.so.[0-9]*; do
+    unversioned_lib="${versioned_lib%%.so.*}.so"
+    [[ -e "${unversioned_lib}" || -L "${unversioned_lib}" ]] && continue
+    ln -s "${versioned_lib##*/}" "${unversioned_lib}"
 done
 shopt -u nullglob
 for cuda_lib_dir in "${CUDA_HOME}/lib" "${CUDA_HOME}/lib64"; do
