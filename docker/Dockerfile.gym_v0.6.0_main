@@ -124,6 +124,10 @@ PY
 )
 export CUDA_HOME
 export PATH="${CUDA_HOME}/bin:${PATH}"
+if [[ ! -e "${CUDA_HOME}/lib64" && -d "${CUDA_HOME}/lib" ]]; then
+    ln -s "${CUDA_HOME}/lib" "${CUDA_HOME}/lib64"
+fi
+export LD_LIBRARY_PATH="${CUDA_HOME}/lib:${CUDA_HOME}/lib64:${LD_LIBRARY_PATH:-}"
 
 NVTE_FRAMEWORK=pytorch \
     uv pip install --python "${UV_PROJECT_ENVIRONMENT}/bin/python" \
