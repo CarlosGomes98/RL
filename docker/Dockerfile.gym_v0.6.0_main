@@ -127,6 +127,27 @@ export PATH="${CUDA_HOME}/bin:${PATH}"
 if [[ ! -e "${CUDA_HOME}/lib64" && -d "${CUDA_HOME}/lib" ]]; then
     ln -s "${CUDA_HOME}/lib" "${CUDA_HOME}/lib64"
 fi
+NVIDIA_SITE=$("${UV_PROJECT_ENVIRONMENT}/bin/python" - <<'PY'
+import pathlib
+import sysconfig
+
+print(pathlib.Path(sysconfig.get_paths()["purelib"]) / "nvidia")
+PY
+)
+mkdir -p "${CUDA_HOME}/include" "${CUDA_HOME}/lib"
+shopt -s nullglob
+for component_dir in "${NVIDIA_SITE}"/*; do
+    if [[ -d "${component_dir}/lib" ]]; then
+        libs=("${component_dir}/lib"/lib*)
+        if (( ${#libs[@]} )); then
+            ln -sf "${libs[@]}" "${CUDA_HOME}/lib/"
+        fi
+    fi
+    if [[ -d "${component_dir}/include" ]]; then
+        find "${component_dir}/include" -mindepth 1 -maxdepth 1 -exec ln -sfn {} "${CUDA_HOME}/include/" \;
+    fi
+done
+shopt -u nullglob
 for cuda_lib_dir in "${CUDA_HOME}/lib" "${CUDA_HOME}/lib64"; do
     if [[ ! -e "${cuda_lib_dir}/libcudart.so" && -e "${cuda_lib_dir}/libcudart.so.13" ]]; then
         ln -s libcudart.so.13 "${cuda_lib_dir}/libcudart.so"
