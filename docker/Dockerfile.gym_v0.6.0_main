@@ -34,6 +34,10 @@ ENV RAY_ENABLE_UV_RUN_RUNTIME_ENV=0
 ENV NEMO_RL_VENV_DIR=/opt/ray_venvs
 ENV NEMO_GYM_VENV_DIR=/opt/gym_venvs
 ENV NEMO_RL_MAIN_REF=${NRL_GIT_REF}
+ENV UV_PROJECT_ENVIRONMENT=/opt/nemo_rl_venv
+ENV PATH="/opt/nemo_rl_venv/bin:${PATH}"
+ENV CUDNN_HOME=/opt/nemo_rl_cudnn
+ENV LD_LIBRARY_PATH="/opt/nemo_rl_cudnn/lib:${LD_LIBRARY_PATH}"
 
 RUN rm -rf /opt/nemo-rl
 COPY --from=nemo-rl-main /nemo-rl /opt/nemo-rl
@@ -89,6 +93,40 @@ if [[ -z "${NEMO_GYM_CUDA:-}" ]]; then
     NEMO_GYM_CUDA=$(uv run python -c "import pathlib,tomllib; indexes=tomllib.loads(pathlib.Path('pyproject.toml').read_text())['tool']['uv']['index']; print(next(i['name'].removeprefix('pytorch-') for i in indexes if i['name'].startswith('pytorch-')))")
 fi
 
+env \
+    UV_TORCH_BACKEND="${NEMO_GYM_CUDA}" \
+    UV_LINK_MODE=copy \
+    uv sync --extra nemo_gym --extra mcore --extra automodel
+
+CUDNN_DIR=$(python -c "import pathlib,sysconfig; cudnn=pathlib.Path(sysconfig.get_paths()['purelib'])/'nvidia'/'cudnn'; print(cudnn if cudnn.exists() else '')")
+if [[ -n "${CUDNN_DIR}" ]]; then
+    rm -f /opt/nemo_rl_cudnn
+    ln -s "${CUDNN_DIR}" /opt/nemo_rl_cudnn
+    export CUDNN_HOME=/opt/nemo_rl_cudnn
+    export LD_LIBRARY_PATH="/opt/nemo_rl_cudnn/lib:${LD_LIBRARY_PATH:-}"
+fi
+
+python - <<'PY'
+import importlib.metadata as metadata
+
+import modelopt.torch.quantization.utils  # noqa: F401
+import transformer_engine.pytorch  # noqa: F401
+
+te_version = metadata.version("transformer-engine")
+te_base = te_version.split("+", 1)[0]
+if tuple(int(part) for part in te_base.split(".")[:2]) < (2, 1):
+    raise RuntimeError(f"transformer-engine {te_version} is too old")
+
+print("transformer-engine", te_version)
+print("nvidia-modelopt", metadata.version("nvidia-modelopt"))
+PY
+EOF
+
+RUN <<"EOF" bash -exu -o pipefail
+if [[ -z "${NEMO_GYM_CUDA:-}" ]]; then
+    NEMO_GYM_CUDA=$(uv run python -c "import pathlib,tomllib; indexes=tomllib.loads(pathlib.Path('pyproject.toml').read_text())['tool']['uv']['index']; print(next(i['name'].removeprefix('pytorch-') for i in indexes if i['name'].startswith('pytorch-')))")
+fi
+
 UV_OVERRIDE_ARGS=()
 if [[ -n "${NEMO_GYM_VLLM_VERSION:-}" ]]; then
     case "${TARGETARCH:-amd64}" in
@@ -105,7 +143,7 @@ env \
     UV_TORCH_BACKEND="${NEMO_GYM_CUDA}" \
     UV_LINK_MODE=hardlink \
     "${UV_OVERRIDE_ARGS[@]}" \
-    uv run --extra nemo_gym python examples/nemo_gym/prefetch_venvs.py ${NEMO_GYM_PREFETCH_CONFIGS}
+    uv run --extra nemo_gym --extra mcore --extra automodel python examples/nemo_gym/prefetch_venvs.py ${NEMO_GYM_PREFETCH_CONFIGS}
 
 rm -f "${GYM_VLLM_OVERRIDE:-}"
 EOF
