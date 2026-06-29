@@ -57,6 +57,15 @@ EOF
 # dependencies used by uv match what was used during this build.
 COPY . /opt/nemo-rl
 
+# The v0.6.0 base installs Ray through symlinks into uv's cache, but Ray's
+# dashboard does not serve static assets through symlinks outside its package.
+RUN UV_PROJECT_ENVIRONMENT=/opt/nemo_rl_venv uv sync \
+    --locked \
+    --inexact \
+    --no-install-project \
+    --reinstall-package ray \
+    --link-mode copy
+
 # Carry the SWE-agent fixes from origin/main's Dockerfile.gym:
 # - shared base_results_dir support for multinode runs
 # - parent directory creation for apptainer logs
