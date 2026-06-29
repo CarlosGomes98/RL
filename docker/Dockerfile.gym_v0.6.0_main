@@ -127,7 +127,14 @@ export PATH="${CUDA_HOME}/bin:${PATH}"
 if [[ ! -e "${CUDA_HOME}/lib64" && -d "${CUDA_HOME}/lib" ]]; then
     ln -s "${CUDA_HOME}/lib" "${CUDA_HOME}/lib64"
 fi
+for cuda_lib_dir in "${CUDA_HOME}/lib" "${CUDA_HOME}/lib64"; do
+    if [[ ! -e "${cuda_lib_dir}/libcudart.so" && -e "${cuda_lib_dir}/libcudart.so.13" ]]; then
+        ln -s libcudart.so.13 "${cuda_lib_dir}/libcudart.so"
+    fi
+done
 export LD_LIBRARY_PATH="${CUDA_HOME}/lib:${CUDA_HOME}/lib64:${LD_LIBRARY_PATH:-}"
+export CUDAToolkit_ROOT="${CUDA_HOME}"
+export CUDACXX="${CUDA_HOME}/bin/nvcc"
 
 NVTE_FRAMEWORK=pytorch \
     uv pip install --python "${UV_PROJECT_ENVIRONMENT}/bin/python" \
