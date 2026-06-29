@@ -45,7 +45,7 @@ from nemo_rl.algorithms.reward_functions import (
 from nemo_rl.algorithms.utils import (
     calculate_baseline_and_std_per_prompt,
     get_gdpo_reward_component_keys,
-    log_generation_metrics_to_wandb,
+    log_generation_metrics,
     print_performance_metrics,
     set_seed,
 )
@@ -2273,10 +2273,14 @@ def grpo_train(
                     name="train/token_mult_prob_error_plot_sample",
                 )
             del train_data
+            logger_config = master_config.get("logger", {})
             if master_config["policy"]["generation"].get("vllm_cfg", {}).get(
                 "enable_vllm_metrics_logger", False
-            ) and master_config.get("logger", {}).get("wandb_enabled", False):
-                log_generation_metrics_to_wandb(
+            ) and (
+                logger_config.get("wandb_enabled", False)
+                or logger_config.get("tensorboard_enabled", False)
+            ):
+                log_generation_metrics(
                     generation_logger_metrics,
                     total_steps + 1,
                     master_config["policy"]["generation"]["vllm_cfg"][
@@ -3392,10 +3396,14 @@ def async_grpo_train(
             metrics["buffer_size"] = buffer_size_current
             metrics["avg_trajectory_age"] = avg_trajectory_age
 
+            logger_config = master_config.get("logger", {})
             if master_config["policy"]["generation"].get("vllm_cfg", {}).get(
                 "enable_vllm_metrics_logger", False
-            ) and master_config.get("logger", {}).get("wandb_enabled", False):
-                log_generation_metrics_to_wandb(
+            ) and (
+                logger_config.get("wandb_enabled", False)
+                or logger_config.get("tensorboard_enabled", False)
+            ):
+                log_generation_metrics(
                     generation_logger_metrics,
                     step + 1,
                     master_config["policy"]["generation"]["vllm_cfg"][
