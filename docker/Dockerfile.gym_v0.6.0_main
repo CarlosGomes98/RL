@@ -104,8 +104,26 @@ uv pip install --python "${UV_PROJECT_ENVIRONMENT}/bin/python" --no-deps -e /opt
     cd /tmp
     "${UV_PROJECT_ENVIRONMENT}/bin/python" -m pip install --upgrade --only-binary=:all: \
         "nvidia-modelopt[torch]>=0.39.0" \
-        "transformer-engine[pytorch,core-cu13]>=2.1.0"
+        "nvidia-cuda-nvcc==13.0.88"
 )
+
+CUDA_HOME=$("${UV_PROJECT_ENVIRONMENT}/bin/python" - <<'PY'
+import pathlib
+import sysconfig
+
+site_packages = pathlib.Path(sysconfig.get_paths()["purelib"])
+matches = sorted(site_packages.glob("nvidia/cuda_nvcc*/bin/nvcc"))
+if not matches:
+    raise SystemExit("could not find pip-installed CUDA 13 nvcc")
+print(matches[0].parent.parent)
+PY
+)
+export CUDA_HOME
+export PATH="${CUDA_HOME}/bin:${PATH}"
+
+NVTE_FRAMEWORK=pytorch \
+    uv pip install --python "${UV_PROJECT_ENVIRONMENT}/bin/python" \
+        "transformer-engine[pytorch,core_cu13]>=2.1.0"
 
 CUDNN_DIR=$(python -c "import pathlib,sysconfig; cudnn=pathlib.Path(sysconfig.get_paths()['purelib'])/'nvidia'/'cudnn'; print(cudnn if cudnn.exists() else '')")
 if [[ -n "${CUDNN_DIR}" ]]; then
