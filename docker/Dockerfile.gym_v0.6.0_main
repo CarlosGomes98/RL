@@ -218,12 +218,12 @@ path = pathlib.Path("pyproject.toml")
 text = path.read_text()
 ray_version = os.environ["NEMO_RL_RAY_VERSION"]
 text, count = re.subn(
-    r'"ray\[default\]==[^"]+"',
+    r'"ray\[default\](?:==|>=)[^"]+"',
     f'"ray[default]=={ray_version}"',
     text,
 )
 if count != 1:
-    raise SystemExit(f"expected to update one ray[default] pin, updated {count}")
+    raise SystemExit(f"expected to update one ray[default] dependency, updated {count}")
 path.write_text(text)
 PY
 
