@@ -96,7 +96,13 @@ fi
 env \
     UV_TORCH_BACKEND="${NEMO_GYM_CUDA}" \
     UV_LINK_MODE=copy \
-    uv sync --extra nemo_gym --extra mcore
+    uv run --extra nemo_gym python -c 'import nemo_gym'
+
+uv pip install --python "${UV_PROJECT_ENVIRONMENT}/bin/python" --no-deps -e /opt/nemo-rl/3rdparty/Megatron-Bridge-workspace
+uv pip install --python "${UV_PROJECT_ENVIRONMENT}/bin/python" --no-deps -e /opt/nemo-rl/3rdparty/Megatron-Bridge-workspace/Megatron-Bridge/3rdparty/Megatron-LM
+uv pip install --python "${UV_PROJECT_ENVIRONMENT}/bin/python" \
+    "nvidia-modelopt[torch]>=0.39.0" \
+    "transformer-engine[pytorch,core_cu13]>=2.1.0"
 
 CUDNN_DIR=$(python -c "import pathlib,sysconfig; cudnn=pathlib.Path(sysconfig.get_paths()['purelib'])/'nvidia'/'cudnn'; print(cudnn if cudnn.exists() else '')")
 if [[ -n "${CUDNN_DIR}" ]]; then
@@ -109,6 +115,8 @@ fi
 python - <<'PY'
 import importlib.metadata as metadata
 
+import megatron.bridge  # noqa: F401
+import megatron.core  # noqa: F401
 import modelopt.torch.quantization.utils  # noqa: F401
 import transformer_engine.pytorch  # noqa: F401
 
@@ -143,7 +151,7 @@ env \
     UV_TORCH_BACKEND="${NEMO_GYM_CUDA}" \
     UV_LINK_MODE=hardlink \
     "${UV_OVERRIDE_ARGS[@]}" \
-    uv run --extra nemo_gym --extra mcore python examples/nemo_gym/prefetch_venvs.py ${NEMO_GYM_PREFETCH_CONFIGS}
+    uv run --extra nemo_gym python examples/nemo_gym/prefetch_venvs.py ${NEMO_GYM_PREFETCH_CONFIGS}
 
 rm -f "${GYM_VLLM_OVERRIDE:-}"
 EOF
