@@ -102,8 +102,10 @@ uv pip install --python "${UV_PROJECT_ENVIRONMENT}/bin/python" --no-deps -e /opt
 uv pip install --python "${UV_PROJECT_ENVIRONMENT}/bin/python" --no-deps -e /opt/nemo-rl/3rdparty/Megatron-Bridge-workspace/Megatron-Bridge/3rdparty/Megatron-LM
 (
     cd /tmp
+    "${UV_PROJECT_ENVIRONMENT}/bin/python" -m pip install --upgrade --only-binary=:all: --no-deps \
+        "nvidia-modelopt>=0.39.0" \
+        "pulp<4.0"
     "${UV_PROJECT_ENVIRONMENT}/bin/python" -m pip install --upgrade --only-binary=:all: \
-        "nvidia-modelopt[torch]>=0.39.0" \
         "nvidia-cuda-nvcc==13.0.88"
 )
 
@@ -112,7 +114,7 @@ import pathlib
 import sysconfig
 
 site_packages = pathlib.Path(sysconfig.get_paths()["purelib"])
-matches = sorted(site_packages.glob("nvidia/cuda_nvcc*/bin/nvcc"))
+matches = sorted(site_packages.glob("nvidia/cu*/bin/nvcc"))
 if not matches:
     raise SystemExit("could not find pip-installed CUDA 13 nvcc")
 print(matches[0].parent.parent)
