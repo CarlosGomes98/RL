@@ -45,6 +45,7 @@
 # Dockerfile and support files.
 !docker/
 !docker/Dockerfile.gym_v0.6.0
+!docker/Dockerfile.gym_v0.6.0_main
 !docker/gym/
 !docker/gym/**
 
