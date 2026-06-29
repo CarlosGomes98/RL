@@ -25,6 +25,7 @@ ARG TARGETARCH
 ARG NEMO_GYM_PREFETCH_CONFIGS=qwen_35/configs/grpo_qwen35_397b_swe_openhands_async.yaml
 ARG NEMO_GYM_CUDA=
 ARG NEMO_GYM_VLLM_VERSION=
+ARG NEMO_RL_RAY_VERSION=2.55.1
 
 USER root
 WORKDIR /opt/nemo-rl
@@ -205,6 +206,41 @@ print("nvidia-modelopt", metadata.version("nvidia-modelopt"))
 PY
 EOF
 
+ENV NEMO_RL_RAY_VERSION=${NEMO_RL_RAY_VERSION}
+
+RUN <<"EOF" bash -exu -o pipefail
+python - <<'PY'
+import os
+import pathlib
+import re
+
+path = pathlib.Path("pyproject.toml")
+text = path.read_text()
+ray_version = os.environ["NEMO_RL_RAY_VERSION"]
+text, count = re.subn(
+    r'"ray\[default\]==[^"]+"',
+    f'"ray[default]=={ray_version}"',
+    text,
+)
+if count != 1:
+    raise SystemExit(f"expected to update one ray[default] pin, updated {count}")
+path.write_text(text)
+PY
+
+uv pip install --python "${UV_PROJECT_ENVIRONMENT}/bin/python" --only-binary=:all: \
+    "ray[default]==${NEMO_RL_RAY_VERSION}"
+
+"${UV_PROJECT_ENVIRONMENT}/bin/python" - <<'PY'
+import os
+import ray
+
+expected = os.environ["NEMO_RL_RAY_VERSION"]
+if ray.__version__ != expected:
+    raise SystemExit(f"ray version mismatch: expected {expected}, got {ray.__version__}")
+print("ray", ray.__version__)
+PY
+EOF
+
 RUN <<"EOF" bash -exu -o pipefail
 if [[ -z "${NEMO_GYM_CUDA:-}" ]]; then
     NEMO_GYM_CUDA=$(uv run python -c "import pathlib,tomllib; indexes=tomllib.loads(pathlib.Path('pyproject.toml').read_text())['tool']['uv']['index']; print(next(i['name'].removeprefix('pytorch-') for i in indexes if i['name'].startswith('pytorch-')))")
@@ -227,6 +263,15 @@ env \
     UV_LINK_MODE=hardlink \
     "${UV_OVERRIDE_ARGS[@]}" \
     uv run --extra nemo_gym python examples/nemo_gym/prefetch_venvs.py ${NEMO_GYM_PREFETCH_CONFIGS}
+"${UV_PROJECT_ENVIRONMENT}/bin/python" - <<'PY'
+import os
+import ray
+
+expected = os.environ["NEMO_RL_RAY_VERSION"]
+if ray.__version__ != expected:
+    raise SystemExit(f"ray version mismatch after prefetch: expected {expected}, got {ray.__version__}")
+print("ray", ray.__version__)
+PY
 
 rm -f "${GYM_VLLM_OVERRIDE:-}"
 EOF
