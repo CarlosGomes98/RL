@@ -133,8 +133,11 @@ for cuda_lib_dir in "${CUDA_HOME}/lib" "${CUDA_HOME}/lib64"; do
     fi
 done
 export LD_LIBRARY_PATH="${CUDA_HOME}/lib:${CUDA_HOME}/lib64:${LD_LIBRARY_PATH:-}"
+export CUDA_PATH="${CUDA_HOME}"
 export CUDAToolkit_ROOT="${CUDA_HOME}"
 export CUDACXX="${CUDA_HOME}/bin/nvcc"
+export NVTE_CUDA_ARCHS="${NVTE_CUDA_ARCHS:-100}"
+export NVTE_CMAKE_EXTRA_ARGS="-DCUDAToolkit_ROOT=${CUDA_HOME} -DCMAKE_CUDA_COMPILER=${CUDA_HOME}/bin/nvcc -DCMAKE_LIBRARY_PATH=${CUDA_HOME}/lib64 -DCUDA_CUDART=${CUDA_HOME}/lib64/libcudart.so"
 
 NVTE_FRAMEWORK=pytorch \
     uv pip install --python "${UV_PROJECT_ENVIRONMENT}/bin/python" \
