@@ -322,11 +322,17 @@ for actor_fqn, modules in critical_imports.items():
             'print("ray", ray.__version__)',
         ]
     )
-    output = subprocess.check_output(
+    result = subprocess.run(
         [str(python_path), "-c", script],
+        stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
-    ).strip()
+    )
+    output = result.stdout.strip()
+    if result.returncode != 0:
+        print(f"{python_path}: FAILED")
+        print(output)
+        raise SystemExit(result.returncode)
     print(f"{python_path}: {output}")
 PY
 EOF
