@@ -219,6 +219,7 @@ ENV CUDA_HOME=/opt/nemo_rl_cuda
 ENV CUDA_PATH=/opt/nemo_rl_cuda
 ENV CUDAToolkit_ROOT=/opt/nemo_rl_cuda
 ENV CUDACXX=/opt/nemo_rl_cuda/bin/nvcc
+ENV NVTE_CUDA_ARCHS=100
 ENV PATH="/opt/nemo_rl_cuda/bin:${PATH}"
 ENV LD_LIBRARY_PATH="/opt/nemo_rl_cuda/lib:/opt/nemo_rl_cuda/lib64:/opt/nemo_rl_cudnn/lib:${LD_LIBRARY_PATH}"
 
