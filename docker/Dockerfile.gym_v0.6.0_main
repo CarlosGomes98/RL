@@ -110,6 +110,7 @@ uv pip install --python "${UV_PROJECT_ENVIRONMENT}/bin/python" --no-deps -e /opt
     "${UV_PROJECT_ENVIRONMENT}/bin/python" -m pip install --upgrade --only-binary=:all: \
         "onnxscript"
     "${UV_PROJECT_ENVIRONMENT}/bin/python" -m pip install --upgrade --only-binary=:all: --no-deps \
+        "nvidia-cuda-cccl==13.3.3.3.1" \
         "nvidia-cuda-nvcc==13.0.88" \
         "nvidia-cuda-crt==13.0.88" \
         "nvidia-nvvm==13.0.88"
@@ -157,6 +158,11 @@ for versioned_lib in "${CUDA_HOME}/lib"/lib*.so.[0-9]*; do
     unversioned_lib="${versioned_lib%%.so.*}.so"
     [[ -e "${unversioned_lib}" || -L "${unversioned_lib}" ]] && continue
     ln -s "${versioned_lib##*/}" "${unversioned_lib}"
+done
+for cccl_entry in cuda cub thrust; do
+    [[ -e "${CUDA_HOME}/include/${cccl_entry}" || -L "${CUDA_HOME}/include/${cccl_entry}" ]] && continue
+    [[ -d "${CUDA_HOME}/include/cccl/${cccl_entry}" ]] || continue
+    ln -s "cccl/${cccl_entry}" "${CUDA_HOME}/include/${cccl_entry}"
 done
 for cuda_header in nvml.h cuda_profiler_api.h; do
     [[ -e "${CUDA_HOME}/include/${cuda_header}" || -L "${CUDA_HOME}/include/${cuda_header}" ]] && continue
