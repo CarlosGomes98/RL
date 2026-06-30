@@ -75,6 +75,7 @@ class MLPerfGRPOLogger:
         self.block_started = False
         self.block_start_step = 0
         self.last_step = 0
+        self.pending_run_stop_status: Optional[str] = None
 
         log_file = self.mlperf_config.get("log_file")
         if log_file:
@@ -329,7 +330,7 @@ class MLPerfGRPOLogger:
             self.config["grpo"]["max_num_steps"] = step
             self.stop_run(status="success", samples_count=samples_count)
         elif step >= int(self.config["grpo"].get("max_num_steps", step)):
-            self.stop_run(status="aborted", samples_count=samples_count)
+            self.pending_run_stop_status = "aborted"
         else:
             self.start_train_block(step)
 
@@ -426,6 +427,7 @@ class MLPerfGRPOLogger:
     def stop_run(self, status: str, samples_count: Optional[int] = None) -> None:
         if self.run_stopped:
             return
+        self.pending_run_stop_status = None
         if status != "success" and self.force_success_status:
             status = "success"
         if samples_count is None:
@@ -444,5 +446,6 @@ class MLPerfGRPOLogger:
     def finalize(self, status: str = "aborted") -> None:
         if not self.run_started or self.run_stopped:
             return
+        status = self.pending_run_stop_status or status
         self.stop_train_block(self.last_step)
         self.stop_run(status=status, samples_count=self.sample_count(self.last_step))
