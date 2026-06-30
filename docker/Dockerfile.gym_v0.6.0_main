@@ -57,6 +57,7 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends \
     ca-certificates \
+    libibverbs-dev \
     software-properties-common
 add-apt-repository -y ppa:apptainer/ppa
 apt-get update
@@ -125,6 +126,8 @@ if not matches:
 print(matches[0].parent.parent)
 PY
 )
+rm -rf /opt/nemo_rl_cuda
+ln -s "${CUDA_HOME}" /opt/nemo_rl_cuda
 export CUDA_HOME
 export PATH="${CUDA_HOME}/bin:${PATH}"
 if [[ ! -e "${CUDA_HOME}/lib64" && -d "${CUDA_HOME}/lib" ]]; then
@@ -206,6 +209,13 @@ print("nvidia-modelopt", metadata.version("nvidia-modelopt"))
 PY
 EOF
 
+ENV CUDA_HOME=/opt/nemo_rl_cuda
+ENV CUDA_PATH=/opt/nemo_rl_cuda
+ENV CUDAToolkit_ROOT=/opt/nemo_rl_cuda
+ENV CUDACXX=/opt/nemo_rl_cuda/bin/nvcc
+ENV PATH="/opt/nemo_rl_cuda/bin:${PATH}"
+ENV LD_LIBRARY_PATH="/opt/nemo_rl_cuda/lib:/opt/nemo_rl_cuda/lib64:/opt/nemo_rl_cudnn/lib:${LD_LIBRARY_PATH}"
+
 ENV NEMO_RL_RAY_VERSION=${NEMO_RL_RAY_VERSION}
 
 RUN <<"EOF" bash -exu -o pipefail
@@ -243,7 +253,13 @@ EOF
 
 RUN <<"EOF" bash -exu -o pipefail
 rm -rf "${NEMO_RL_VENV_DIR}"
-python -m nemo_rl.utils.prefetch_venvs
+python -m nemo_rl.utils.prefetch_venvs \
+    vllm_worker \
+    async_utils \
+    sync_rollout_actor \
+    megatron_policy_worker \
+    nemo_gym \
+    --negative-filters modelopt
 
 python - <<'PY'
 import os
@@ -252,24 +268,59 @@ import subprocess
 
 expected = os.environ["NEMO_RL_RAY_VERSION"]
 venv_root = pathlib.Path(os.environ["NEMO_RL_VENV_DIR"])
-python_paths = sorted(venv_root.glob("*/bin/python"))
-if not python_paths:
-    raise SystemExit(f"no actor venvs found under {venv_root}")
+critical_imports = {
+    "nemo_rl.models.generation.vllm.vllm_worker.VllmGenerationWorker": [
+        "vllm",
+        "deep_ep",
+    ],
+    "nemo_rl.models.generation.vllm.vllm_worker_async.VllmAsyncGenerationWorker": [
+        "vllm",
+        "deep_ep",
+    ],
+    "nemo_rl.algorithms.async_utils.AsyncTrajectoryCollector": [
+        "vllm",
+        "deep_ep",
+    ],
+    "nemo_rl.algorithms.async_utils.ReplayBuffer": [
+        "vllm",
+        "deep_ep",
+    ],
+    "nemo_rl.experience.sync_rollout_actor.SyncRolloutActor": [
+        "vllm",
+        "deep_ep",
+    ],
+    "nemo_rl.models.policy.workers.megatron_policy_worker.MegatronPolicyWorker": [
+        "megatron.core",
+        "megatron.bridge",
+        "modelopt.torch.quantization.utils",
+        "transformer_engine.pytorch",
+    ],
+    "nemo_rl.environments.nemo_gym.NemoGym": [
+        "nemo_gym",
+    ],
+}
 
-for python_path in python_paths:
-    ray_version = subprocess.check_output(
+for actor_fqn, modules in critical_imports.items():
+    python_path = venv_root / actor_fqn / "bin" / "python"
+    if not python_path.exists():
+        raise SystemExit(f"missing actor venv for {actor_fqn}: {python_path}")
+
+    script = "\n".join(
         [
-            str(python_path),
-            "-c",
-            "import ray; print(ray.__version__)",
-        ],
+            "import ray",
+            f"expected = {expected!r}",
+            "if ray.__version__ != expected:",
+            '    raise SystemExit(f"ray version mismatch: expected {expected}, got {ray.__version__}")',
+            *(f"import {module}" for module in modules),
+            'print("ray", ray.__version__)',
+        ]
+    )
+    output = subprocess.check_output(
+        [str(python_path), "-c", script],
+        stderr=subprocess.STDOUT,
         text=True,
     ).strip()
-    if ray_version != expected:
-        raise SystemExit(
-            f"{python_path} has ray {ray_version}, expected {expected}"
-        )
-    print(f"{python_path}: ray {ray_version}")
+    print(f"{python_path}: {output}")
 PY
 EOF
 
