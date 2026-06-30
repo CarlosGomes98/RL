@@ -13,6 +13,19 @@ index 98c01b4c..f23434ff 100644
  
  
  class SWEBenchWrapperServerConfig(BaseModel):
+@@ -490,9 +494,10 @@ EVAL_HARNESS_COMMIT={eval_harness_commit} \\
+             f'export UV_INSTALL_DIR="{self.config.r2e_gym_setup_dir}/uv" && '
+             f'export UV_PYTHON_INSTALL_DIR="{self.config.r2e_gym_setup_dir}/python" && '
+             f'export PATH="{self.config.r2e_gym_setup_dir}/uv/bin:$PATH" && '
++            f'export PYTHONPATH="/r2egym_setup/R2E-Gym/src:{self.config.r2e_gym_setup_dir}/R2E-Gym/src:$PYTHONPATH" && '
+             # Run with clean environment to avoid venv contamination
+-            # Use the pre-built venv directly with its absolute path
+-            f"env -u VIRTUAL_ENV {self.config.r2e_gym_setup_dir}/R2E-Gym/venv/bin/python src/r2egym/agenthub/run/run_local_evaluation.py "
++            # Use the pre-built venv directly from the mounted setup directory.
++            "env -u VIRTUAL_ENV /r2egym_setup/R2E-Gym/venv/bin/python -m r2egym.agenthub.run.run_local_evaluation "
+             f"    --predictions_path {self.config.output_for_eval_mounted_path} "
+             f"    --instance_id {self.config.instance_id} "
+             f"    --timeout {self.config.swebench_tests_timeout} "
 @@ -1170,7 +1174,7 @@ class RunOpenHandsAgent(BaseModel):
      ) -> ActiveContainerCommand:
          # Stream output to log file as it appears
