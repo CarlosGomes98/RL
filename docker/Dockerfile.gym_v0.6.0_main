@@ -242,6 +242,38 @@ PY
 EOF
 
 RUN <<"EOF" bash -exu -o pipefail
+rm -rf "${NEMO_RL_VENV_DIR}"
+python -m nemo_rl.utils.prefetch_venvs
+
+python - <<'PY'
+import os
+import pathlib
+import subprocess
+
+expected = os.environ["NEMO_RL_RAY_VERSION"]
+venv_root = pathlib.Path(os.environ["NEMO_RL_VENV_DIR"])
+python_paths = sorted(venv_root.glob("*/bin/python"))
+if not python_paths:
+    raise SystemExit(f"no actor venvs found under {venv_root}")
+
+for python_path in python_paths:
+    ray_version = subprocess.check_output(
+        [
+            str(python_path),
+            "-c",
+            "import ray; print(ray.__version__)",
+        ],
+        text=True,
+    ).strip()
+    if ray_version != expected:
+        raise SystemExit(
+            f"{python_path} has ray {ray_version}, expected {expected}"
+        )
+    print(f"{python_path}: ray {ray_version}")
+PY
+EOF
+
+RUN <<"EOF" bash -exu -o pipefail
 if [[ -z "${NEMO_GYM_CUDA:-}" ]]; then
     NEMO_GYM_CUDA=$(uv run python -c "import pathlib,tomllib; indexes=tomllib.loads(pathlib.Path('pyproject.toml').read_text())['tool']['uv']['index']; print(next(i['name'].removeprefix('pytorch-') for i in indexes if i['name'].startswith('pytorch-')))")
 fi
