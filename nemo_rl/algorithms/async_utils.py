@@ -277,6 +277,11 @@ class AsyncTrajectoryCollector:
         self.current_weight_version: int = start_step
         self.initial_weight_version: int = start_step
 
+        # Epoch the background collector is currently iterating over the dataloader.
+        # The collector cycles the dataloader across epochs (see _collection_loop),
+        # so this advances each time the dataset is exhausted.
+        self.current_epoch: int = 0
+
         # Track when generation limits cause collection to pause
         self._last_limit_warning_version = None
 
@@ -400,54 +405,82 @@ class AsyncTrajectoryCollector:
         print("Collection thread started, start_collection returning")
 
     def _collection_loop(self):
-        """Run the collection loop in background thread."""
+        """Run the collection loop in background thread.
+
+        Cycles over the dataloader across epochs. The dataset is typically much
+        smaller than ``max_num_steps * num_prompts_per_step`` prompts, so a single
+        pass would exhaust the dataloader and silently stop the collector -- the
+        trainer would then wait forever for the replay buffer to refill. Re-iterating
+        the dataloader for up to ``max_num_epochs`` passes keeps trajectories flowing
+        until the trainer reaches ``max_num_steps``.
+        """
         try:
-            for batch in self.dataloader:
-                if not self.running:
-                    break
-
-                # Check if manually paused and wait
-                if not self._manual_pause_cleared.is_set() and self.running:
-                    self._manual_pause_cleared.wait()
-
-                # Check if refit is in progress and wait
-                if not self._refit_pause_cleared.is_set() and self.running:
-                    print("⏸️ Pausing collection for refit...")
-                    self._refit_pause_cleared.wait()
-                    print("▶️ Refit completed, resuming collection")
-
-                # Check if generation limits require pausing collection
-                if self._should_pause_for_generation_limits() and self.running:
-                    # Only log warning once per weight version
-                    if self._last_limit_warning_version != self.current_weight_version:
-                        async_cfg = self.master_config.get("grpo", {}).get(
-                            "async_grpo", {}
-                        )
-                        max_trajectory_age = async_cfg["max_trajectory_age_steps"]
-                        target_weights = [
-                            self.current_weight_version + i
-                            for i in range(max_trajectory_age)
-                        ]
-
-                        print(
-                            f"⏸️ Pausing collection: all target weights {target_weights} for weight version {self.current_weight_version} "
-                            f"already exist in buffer. Waiting for weight update..."
-                        )
-                        self._last_limit_warning_version = self.current_weight_version
-
-                        self._generation_limit_cleared.clear()  # Clear the event to pause
-
-                    # Efficiently wait for generation limits to be cleared (no polling!)
-                    self._generation_limit_cleared.wait()
-
-                    # Double-check we're still running after being woken up
+            max_num_epochs = self.master_config["grpo"]["max_num_epochs"]
+            while self.running and self.current_epoch < max_num_epochs:
+                for batch in self.dataloader:
                     if not self.running:
                         break
 
-                if not self.running:
-                    break
+                    # Check if manually paused and wait
+                    if not self._manual_pause_cleared.is_set() and self.running:
+                        self._manual_pause_cleared.wait()
 
-                self._process_batch(batch)
+                    # Check if refit is in progress and wait
+                    if not self._refit_pause_cleared.is_set() and self.running:
+                        print("⏸️ Pausing collection for refit...")
+                        self._refit_pause_cleared.wait()
+                        print("▶️ Refit completed, resuming collection")
+
+                    # Check if generation limits require pausing collection
+                    if self._should_pause_for_generation_limits() and self.running:
+                        # Only log warning once per weight version
+                        if (
+                            self._last_limit_warning_version
+                            != self.current_weight_version
+                        ):
+                            async_cfg = self.master_config.get("grpo", {}).get(
+                                "async_grpo", {}
+                            )
+                            max_trajectory_age = async_cfg["max_trajectory_age_steps"]
+                            target_weights = [
+                                self.current_weight_version + i
+                                for i in range(max_trajectory_age)
+                            ]
+
+                            print(
+                                f"⏸️ Pausing collection: all target weights {target_weights} for weight version {self.current_weight_version} "
+                                f"already exist in buffer. Waiting for weight update..."
+                            )
+                            self._last_limit_warning_version = (
+                                self.current_weight_version
+                            )
+
+                            self._generation_limit_cleared.clear()  # Clear the event to pause
+
+                        # Efficiently wait for generation limits to be cleared (no polling!)
+                        self._generation_limit_cleared.wait()
+
+                        # Double-check we're still running after being woken up
+                        if not self.running:
+                            break
+
+                    if not self.running:
+                        break
+
+                    self._process_batch(batch)
+                else:
+                    # Dataloader exhausted without a shutdown break: advance to the
+                    # next epoch and re-iterate from the start of the dataset.
+                    self.current_epoch += 1
+                    if self.running and self.current_epoch < max_num_epochs:
+                        print(
+                            f"📚 Dataloader exhausted; starting epoch "
+                            f"{self.current_epoch + 1}/{max_num_epochs}"
+                        )
+                    continue
+
+                # Reached only when the inner loop hit `break` (self.running cleared).
+                break
 
         except Exception as e:
             print(f"❌ Error in trajectory collection: {e}")
@@ -637,6 +670,20 @@ class AsyncTrajectoryCollector:
         if hasattr(self, "dataloader") and hasattr(self.dataloader, "state_dict"):
             return self.dataloader.state_dict()
         return {}
+
+    def is_running(self) -> bool:
+        """Whether the background collection loop is still active.
+
+        Returns False once the dataloader has been fully consumed for all
+        ``max_num_epochs`` passes (or after stop()). The trainer uses this to end
+        gracefully instead of waiting forever for a replay buffer that can no longer
+        be refilled.
+        """
+        return self.running
+
+    def get_current_epoch(self) -> int:
+        """Epoch the collector is currently iterating (0-indexed)."""
+        return self.current_epoch
 
     def _cleanup_finished_threads(self) -> None:
         with self._threads_lock:

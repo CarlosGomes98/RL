@@ -2901,6 +2901,16 @@ def async_grpo_train(
                         or len(sample_result["trajectories"])
                         != num_prompt_groups_needed
                     ):
+                        # If the collector has finished cycling the dataset for all
+                        # max_num_epochs and the buffer can no longer form a full step,
+                        # end training gracefully instead of waiting forever.
+                        if not ray.get(trajectory_collector.is_running.remote()):
+                            print(
+                                "🏁 Trajectory collector finished all epochs "
+                                "(max_num_epochs reached) and the replay buffer can no "
+                                "longer form a full step; ending training early."
+                            )
+                            break
                         print(
                             "⏳ Buffer empty or not enough groups to form a full step, waiting..."
                         )
