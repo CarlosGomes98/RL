@@ -1818,17 +1818,17 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
             )
 
             if not all_success:
-                print(
-                    f"Error: Worker failed to update weights. Result: {exceptions_or_none}"
+                raise RuntimeError(
+                    "Worker failed to update weights via IPC/ZMQ. "
+                    f"Result: {exceptions_or_none}"
                 )
-                return False
             return True
         except Exception as e:
             print(f"Exception during collective_rpc for weight update: {e}")
             import traceback
 
             traceback.print_exc()
-            return False
+            raise
 
     async def update_weights_from_collective_async(self) -> bool:
         """Async version of update_weights_from_collective."""
@@ -1856,17 +1856,17 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
             )
 
             if not all_success:
-                print(
-                    f"Error: Worker failed to update weights. Result: {exceptions_or_none}"
+                raise RuntimeError(
+                    "Worker failed to update weights from collective. "
+                    f"Result: {exceptions_or_none}"
                 )
-                return False
             return True
         except Exception as e:
             print(f"Exception during collective_rpc for weight update: {e}")
             import traceback
 
             traceback.print_exc()
-            return False
+            raise
 
     async def reset_prefix_cache_async(self):
         """Async version of reset_prefix_cache."""
@@ -1896,6 +1896,12 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
 
         # Reset the prefix cache to ensure that prefix cache is not reused after weights are updated
         await self.llm.reset_prefix_cache()
+        # Reset the multimodal processor cache (sender side) so it stays in
+        # sync with the receiver cache that vLLM clears internally during
+        # sleep. Without this, the sender can think multimodal inputs are
+        # already cached on the receiver and send data=None.
+        if hasattr(self.llm, "reset_mm_cache"):
+            await self.llm.reset_mm_cache()
         await self.llm.sleep(level=1)
 
         gc.collect()
