@@ -8,20 +8,20 @@ defaults: grpo_qwen35_397b_swe_openhands_async.yaml
 
 grpo:
   num_prompts_per_step: 16
-  num_generations_per_prompt: 8
-  max_num_steps: 20
-  val_period: 2
-  val_at_start: true
+  num_generations_per_prompt: 16
+  max_num_steps: 30
+  val_period: 0
+  val_at_start: false
   val_at_end: true
 
 policy:
-  train_global_batch_size: 128
+  train_global_batch_size: 256
   megatron_cfg:
     optimizer:
-      lr: 2.0e-6
-      min_lr: 2.0e-6
+      lr: 2.5e-6
+      min_lr: 2.5e-6
     scheduler:
-      lr_warmup_iters: 2
+      lr_warmup_iters: 0
 
 env:
   nemo_gym:

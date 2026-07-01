@@ -14,9 +14,9 @@ grpo:
   max_num_steps: 8
   normalize_rewards: true
   use_leave_one_out_baseline: true
-  val_period: 2
-  val_at_start: true
-  val_at_end: false
+  val_period: 0
+  val_at_start: false
+  val_at_end: true
   overlong_filtering: true
   max_val_samples: null
   val_batch_size: null
@@ -147,7 +147,7 @@ policy:
       weight_decay_incr_style: constant
       lr_decay_style: constant
       lr_decay_iters: 100000
-      lr_warmup_iters: 3
+      lr_warmup_iters: 0
       lr_warmup_init: 3e-7
       override_opt_param_scheduler: true
     distributed_data_parallel_config:
@@ -244,7 +244,7 @@ policy:
     colocated:
       enabled: false
       resources:
-        gpus_per_node: 8
+        gpus_per_node: 4
         num_nodes: 32
     mcore_generation_config:
       buffer_size_gb: 8
@@ -286,7 +286,7 @@ env:
           agent_max_turns: 30
           swebench_agent_timeout: 600
           swebench_tests_timeout: 300
-          concurrency: 256
+          concurrency: 128
           base_results_dir: /logs/nemo_gym/swe_agents_train
           dataset_path: ${data.train.data_path}
           container_formatter:
@@ -297,7 +297,7 @@ env:
           agent_max_turns: 30
           swebench_agent_timeout: 600
           swebench_tests_timeout: 180
-          concurrency: 256
+          concurrency: 128
           base_results_dir: /logs/nemo_gym/swe_agents_val
           dataset_path: ${data.validation.data_path}
           container_formatter: ${env.nemo_gym.swe_agents_train.responses_api_agents.swe_agents.container_formatter}
@@ -325,8 +325,8 @@ logger:
     collection_interval: 10
     flush_interval: 10
 cluster:
-  gpus_per_node: 8
-  num_nodes: 16
+  gpus_per_node: 4
+  num_nodes: 64
 token_ids:
   eos: 248046
   think_open: 248068
