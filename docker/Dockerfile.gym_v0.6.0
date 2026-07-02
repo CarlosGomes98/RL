@@ -30,6 +30,8 @@ ENV NEMO_GYM_VENV_DIR=/opt/gym_venvs
 
 COPY docker/gym/mlperf-gym.patch /tmp/mlperf-gym.patch
 COPY docker/gym/qwen35-gym-vllm-model.patch /tmp/qwen35-gym-vllm-model.patch
+COPY docker/gym/mlperf-gym-finish-reward.patch /tmp/mlperf-gym-finish-reward.patch
+COPY docker/gym/mlperf-gym-tool-call-output.patch /tmp/mlperf-gym-tool-call-output.patch
 COPY docker/gym/prefetch_venvs.py /opt/nemo-rl/examples/nemo_gym/prefetch_venvs.py
 
 # Install Apptainer in an architecture-aware way. The older Dockerfile.gym used an
@@ -55,19 +57,36 @@ EOF
 # dependencies used by uv match what was used during this build.
 COPY . /opt/nemo-rl
 
+# The v0.6.0 base installs Ray through symlinks into uv's cache, but Ray's
+# dashboard does not serve static assets through symlinks outside its package.
+RUN UV_PROJECT_ENVIRONMENT=/opt/nemo_rl_venv uv sync \
+    --locked \
+    --inexact \
+    --no-install-project \
+    --reinstall-package ray \
+    --link-mode copy
+
 # Carry the SWE-agent fixes from origin/main's Dockerfile.gym:
 # - shared base_results_dir support for multinode runs
 # - parent directory creation for apptainer logs
 # - R2E-Gym dependency repair
+# - SWE sample masking for incomplete or timed-out agent runs
+# - function_call response splitting for generated tool-call tokens
 RUN <<"EOF" bash -exu
 cd /opt/nemo-rl/3rdparty/Gym-workspace/Gym
-if git apply --check /tmp/mlperf-gym.patch; then
-    git apply /tmp/mlperf-gym.patch
-elif git apply --reverse --check /tmp/mlperf-gym.patch; then
-    echo "mlperf-gym.patch is already applied"
-else
-    git apply --check /tmp/mlperf-gym.patch
-fi
+for patch in \
+    /tmp/mlperf-gym.patch \
+    /tmp/mlperf-gym-finish-reward.patch \
+    /tmp/mlperf-gym-tool-call-output.patch
+do
+    if git apply --check "$patch"; then
+        git apply "$patch"
+    elif git apply --reverse --check "$patch"; then
+        echo "$(basename "$patch") is already applied"
+    else
+        git apply --check "$patch"
+    fi
+done
 EOF
 
 # Carry the Qwen 3.5 vLLM model-server fixes without a runtime source overlay.

@@ -60,6 +60,8 @@ grpo:
   # Mask sequences whose vLLM-vs-Megatron prob disagreement exceeds 2x.
   # Important safety net for MoE + very long sequences.
   seq_logprob_error_threshold: 2
+  # Advantage value assigned to invalid tool call tokens (e.g. -5.0 to penalize). null disables.
+  invalid_tool_call_advantage: null
   async_grpo:
     enabled: true     # ASYNC: 1-step-off non-colocated for throughput
     max_trajectory_age_steps: 1
@@ -300,6 +302,9 @@ env:
     skip_venv_if_present: true
     rollout_max_attempts_to_avoid_lp_nan: 1
     is_trajectory_collection: false
+    # Optional substrings used to flag invalid assistant tool-call turns for advantage
+    # penalties (see grpo.invalid_tool_call_advantage). Omit to use built-in defaults.
+    # invalid_tool_call_patterns: ["<tool_call>", "</tool_call>", "<function_call>", "</function_call>"]
     config_paths:
     - responses_api_models/vllm_model/configs/vllm_model_for_training.yaml  # required, *for_training
     - responses_api_agents/swe_agents/configs/swebench_openhands_training.yaml

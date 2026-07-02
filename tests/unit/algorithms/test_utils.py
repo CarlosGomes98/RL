@@ -14,6 +14,7 @@
 
 import math
 from datetime import datetime
+from unittest.mock import MagicMock, call
 
 import pytest
 import torch
@@ -21,6 +22,7 @@ import torch
 from nemo_rl.algorithms.utils import (
     calculate_baseline_and_std_per_prompt,
     get_tokenizer,
+    log_generation_metrics,
     maybe_pad_last_batch,
     print_performance_metrics,
 )
@@ -83,6 +85,35 @@ def get_format_with_simple_role_header(messages):
             + "<|eot_id|>"
         )
     return message
+
+
+def test_log_generation_metrics_logs_each_timeline():
+    logger = MagicMock()
+    metrics = {
+        "inflight_batch_sizes": {0: [1, 2]},
+        "num_pending_samples": {0: [0, 1]},
+    }
+
+    log_generation_metrics(metrics, step=3, timeline_interval=0.5, logger=logger)
+
+    logger.log_plot_per_worker_timeline_metrics.assert_has_calls(
+        [
+            call(
+                metrics["inflight_batch_sizes"],
+                step=3,
+                prefix="generation_metrics",
+                name="inflight_batch_sizes",
+                timeline_interval=0.5,
+            ),
+            call(
+                metrics["num_pending_samples"],
+                step=3,
+                prefix="generation_metrics",
+                name="num_pending_samples",
+                timeline_interval=0.5,
+            ),
+        ]
+    )
 
 
 @pytest.mark.hf_gated

@@ -45,7 +45,7 @@ from nemo_rl.algorithms.reward_functions import (
 from nemo_rl.algorithms.utils import (
     calculate_baseline_and_std_per_prompt,
     get_gdpo_reward_component_keys,
-    log_generation_metrics_to_wandb,
+    log_generation_metrics,
     print_performance_metrics,
     set_seed,
 )
@@ -180,6 +180,9 @@ class GRPOConfig(TypedDict):
     # Sequence-level logprob error masking for training stability. If set, mask sequences with mult_prob_error exceeding this threshold (same scale as token_mult_prob_error metric, e.g., 1.5)
     # Note that this is slightly different than Masked Importance Sampling (MIS) because this uses the absolute value of the difference between the training and generation logprobs, whereas MIS just uses the difference between the training and generation logprobs.
     seq_logprob_error_threshold: float | None
+    # Advantage value to assign to invalid tool call tokens. When set (e.g. -5.0), overwrites the
+    # computed advantage for those tokens to penalize them; absent/None disables the penalty.
+    invalid_tool_call_advantage: NotRequired[float | None]
     # Advantage estimator configuration (grpo or reinforce_plus_plus)
     adv_estimator: NotRequired[AdvEstimatorConfig]
 
@@ -1166,6 +1169,86 @@ def add_grpo_token_loss_masks_and_generation_logprobs(
                 )
 
 
+def _resolve_invalid_tool_call_advantage(
+    master_config: MasterConfig,
+) -> float | None:
+    """Return configured invalid tool-call penalty and validate feature support."""
+    invalid_tool_call_advantage = master_config["grpo"].get(
+        "invalid_tool_call_advantage"
+    )
+    if invalid_tool_call_advantage is None:
+        return invalid_tool_call_advantage
+
+    # The is_invalid_tool_call flag is only populated by the NeMo-Gym path.
+    # Without that path the penalty would silently no-op, so fail loudly instead.
+    assert _should_use_nemo_gym(master_config), (
+        "grpo.invalid_tool_call_advantage requires the NeMo-Gym path "
+        "(env.should_use_nemo_gym=true); it is not supported with the native "
+        "generation path."
+    )
+    return invalid_tool_call_advantage
+
+
+def _apply_invalid_tool_call_advantage_penalty(
+    train_data: BatchedDataDict[ClippedPGLossDataDict],
+    message_logs: list[LLMMessageLogType | VLMMessageLogType],
+    invalid_tool_call_advantage: float | None,
+    log_config: bool = False,
+) -> None:
+    """Overwrite advantages for assistant-message spans flagged as invalid tool calls."""
+    if invalid_tool_call_advantage is None:
+        return
+
+    if log_config:
+        print(
+            f"Invalid tool call advantage: {invalid_tool_call_advantage}",
+            flush=True,
+        )
+
+    advantages = train_data["advantages"]
+    materialized_advantages = False
+    for i, message_log in enumerate(message_logs):
+        token_offset = 0
+        for j, message in enumerate(message_log):
+            token_ids = cast(torch.Tensor, message["token_ids"])
+            msg_len = len(token_ids)
+            is_invalid = (
+                message["role"] == "assistant"
+                and "generation_logprobs" in message
+                and message.get("is_invalid_tool_call", False)
+            )
+            if is_invalid and not materialized_advantages:
+                # GRPO/GDPO may expand per-sample advantages into zero-stride views.
+                advantages = advantages.clone()
+                train_data["advantages"] = advantages
+                materialized_advantages = True
+            if is_invalid:
+                print(
+                    f"Setting negative advantage ({invalid_tool_call_advantage}) for invalid tool call in assistant message {i} {j}",
+                    flush=True,
+                )
+                advantages[i, token_offset : token_offset + msg_len] = (
+                    invalid_tool_call_advantage
+                )
+            token_offset += msg_len
+
+
+def _apply_configured_invalid_tool_call_advantage_penalty(
+    train_data: BatchedDataDict[ClippedPGLossDataDict],
+    message_logs: list[LLMMessageLogType | VLMMessageLogType],
+    master_config: MasterConfig,
+    log_config: bool = False,
+) -> None:
+    """Resolve config and apply invalid tool-call advantage penalties."""
+    invalid_tool_call_advantage = _resolve_invalid_tool_call_advantage(master_config)
+    _apply_invalid_tool_call_advantage_penalty(
+        train_data=train_data,
+        message_logs=message_logs,
+        invalid_tool_call_advantage=invalid_tool_call_advantage,
+        log_config=log_config,
+    )
+
+
 def _stable_group_ids(prompt_ids_for_adv, num_generations_per_prompt):
     """Stable per-prompt grouping key for GRPO advantage computation.
 
@@ -1971,6 +2054,10 @@ def grpo_train(
                     )
                     del baseline_for_log
 
+                    _apply_configured_invalid_tool_call_advantage_penalty(
+                        train_data, repeated_batch["message_log"], master_config
+                    )
+
                 memory_tracker.snapshot_start_of_stage("Policy train", dir())
                 print("▶ Preparing for training...", flush=True)
                 with timer.time("training_prep"):
@@ -2273,10 +2360,14 @@ def grpo_train(
                     name="train/token_mult_prob_error_plot_sample",
                 )
             del train_data
+            logger_config = master_config.get("logger", {})
             if master_config["policy"]["generation"].get("vllm_cfg", {}).get(
                 "enable_vllm_metrics_logger", False
-            ) and master_config.get("logger", {}).get("wandb_enabled", False):
-                log_generation_metrics_to_wandb(
+            ) and (
+                logger_config.get("wandb_enabled", False)
+                or logger_config.get("tensorboard_enabled", False)
+            ):
+                log_generation_metrics(
                     generation_logger_metrics,
                     total_steps + 1,
                     master_config["policy"]["generation"]["vllm_cfg"][
@@ -3112,6 +3203,13 @@ def async_grpo_train(
                         f"  📊 Advantages stats: min={advantages.min():.4f}, max={advantages.max():.4f}, mean={advantages.mean():.4f}, std={advantages.std():.4f}"
                     )
 
+                    _apply_configured_invalid_tool_call_advantage_penalty(
+                        train_data,
+                        repeated_batch["message_log"],
+                        master_config,
+                        log_config=True,
+                    )
+
                 print("▶ Preparing for training...")
                 with timer.time("training_prep"):
                     policy.prepare_for_training()
@@ -3392,10 +3490,14 @@ def async_grpo_train(
             metrics["buffer_size"] = buffer_size_current
             metrics["avg_trajectory_age"] = avg_trajectory_age
 
+            logger_config = master_config.get("logger", {})
             if master_config["policy"]["generation"].get("vllm_cfg", {}).get(
                 "enable_vllm_metrics_logger", False
-            ) and master_config.get("logger", {}).get("wandb_enabled", False):
-                log_generation_metrics_to_wandb(
+            ) and (
+                logger_config.get("wandb_enabled", False)
+                or logger_config.get("tensorboard_enabled", False)
+            ):
+                log_generation_metrics(
                     generation_logger_metrics,
                     step + 1,
                     master_config["policy"]["generation"]["vllm_cfg"][
