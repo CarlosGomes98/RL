@@ -47,8 +47,13 @@ import importlib.metadata as metadata
 print("ray", metadata.version("ray"))
 PY
 
-UV_LINK_MODE=symlink uv run python examples/nemo_gym/prefetch_venvs.py \
-    ${NEMO_GYM_PREFETCH_CONFIGS}
+CONTAINER_HF_CKPT_PATH=/tmp/qwen35-hf-checkpoint \
+NEMO_GYM_SWE_TRAIN_DATA_PATH=/tmp/qwen35-train.jsonl \
+NEMO_GYM_SWE_VALIDATION_DATA_PATH=/tmp/qwen35-validation.jsonl \
+NEMO_GYM_SWE_SIF_DIR=/tmp/qwen35-sif \
+UV_LINK_MODE=symlink \
+    uv run python examples/nemo_gym/prefetch_venvs.py \
+        ${NEMO_GYM_PREFETCH_CONFIGS}
 
 python tools/generate_fingerprint.py > /opt/nemo_rl_container_fingerprint
 EOF
