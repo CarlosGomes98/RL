@@ -20,7 +20,7 @@ RESULTS_ROOT="${RESULTS_ROOT:-${REPO_ROOT}/results}"
 LAUNCHER="${LAUNCHER:-${REPO_ROOT}/examples/nemo_gym/launch_qwen35_nemo_gym_multinode_training.sh}"
 
 export REPO_LOCATION="${REPO_LOCATION:-${REPO_ROOT}}"
-DEFAULT_QWEN35_CONTAINER_IMAGE_PATH="/lustre/fsw/portfolios/coreai/projects/coreai_mlperf_training/containers/dl+mlperf+optimized+nemo-rl-nightly-qwen35-ea7c4f9-86ec79578.sqsh"
+DEFAULT_QWEN35_CONTAINER_IMAGE_PATH="/lustre/fsw/portfolios/coreai/projects/coreai_mlperf_training/containers/dl+mlperf+optimized+nemo-rl-nightly-qwen35-ea7c4f9-83b9f1838.sqsh"
 export CONTAINER_IMAGE_PATH="${QWEN35_CONTAINER_IMAGE_PATH:-${CONTAINER_IMAGE_PATH:-${DEFAULT_QWEN35_CONTAINER_IMAGE_PATH}}}"
 export SLURM_ACCOUNT="${SLURM_ACCOUNT:-coreai_mlperf_training}"
 export SLURM_PARTITION="${SLURM_PARTITION:-batch}"
