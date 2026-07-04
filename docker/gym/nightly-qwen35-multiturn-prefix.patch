@@ -1,0 +1,164 @@
+diff --git a/nemo_rl/models/generation/vllm/vllm_worker_async.py b/nemo_rl/models/generation/vllm/vllm_worker_async.py
+--- a/nemo_rl/models/generation/vllm/vllm_worker_async.py
++++ b/nemo_rl/models/generation/vllm/vllm_worker_async.py
+@@ -49,12 +49,65 @@ from nemo_rl.models.generation.vllm.vllm_worker import BaseVllmGenerationWorker
+ 
+ LOGGER = logging.getLogger(__name__)
+ 
+ 
++def _first_token_mismatch(left: list[int], right: list[int]) -> Optional[int]:
++    compare_len = min(len(left), len(right))
++    for idx in range(compare_len):
++        if left[idx] != right[idx]:
++            return idx
++    if len(left) != len(right):
++        return compare_len
++    return None
++
++
++def _find_nth_token_from_end(token_ids: list[int], token_id: int, n: int) -> int:
++    if n <= 0:
++        return -1
++
++    seen = 0
++    for idx in reversed(range(len(token_ids))):
++        if token_ids[idx] == token_id:
++            seen += 1
++            if seen == n:
++                return idx
++    return -1
++
++
++def _qwen35_replace_prefix_from_suffix_messages(
++    *,
++    eos_token_id: int,
++    model_prefix_token_ids: list[int],
++    template_token_ids: list[int],
++    suffix_message_count: Optional[int],
++) -> Optional[list[int]]:
++    if suffix_message_count is None:
++        return None
++
++    # The boundary before N suffix messages is the (N + 1)-th EOS from the
++    # end: one EOS closes the prior assistant message and one closes each
++    # subsequent user/tool message.
++    template_cut_start = _find_nth_token_from_end(
++        template_token_ids, eos_token_id, suffix_message_count + 1
++    )
++    if template_cut_start < 0:
++        return None
++
++    model_cut_end = len(model_prefix_token_ids)
++    if model_prefix_token_ids and model_prefix_token_ids[-1] == eos_token_id:
++        model_cut_end -= 1
++
++    return (
++        model_prefix_token_ids[:model_cut_end]
++        + template_token_ids[template_cut_start:]
++    )
++
++
+ def _replace_prefix_tokens(
+     tokenizer,
+     model_prefix_token_ids: list[int],
+     template_prefix_token_ids: list[int],
+     template_token_ids: list[int],
++    suffix_message_count: Optional[int] = None,
+ ) -> list[int]:
+     """This is a subroutine used inside the vLLM Chat Completion server.
+ 
+@@ -119,6 +177,26 @@ def _replace_prefix_tokens(
+         # And since chat templates will always add one for us, we just cut the model input to right before the EOS token ID (if applicable)
+         if model_prefix_token_ids[-1] == eos_token_id:
+             model_cut_end -= 1
++
++    if _first_token_mismatch(template_prefix_token_ids, template_token_ids) is not None:
++        repaired_token_ids = _qwen35_replace_prefix_from_suffix_messages(
++            eos_token_id=eos_token_id,
++            model_prefix_token_ids=model_prefix_token_ids,
++            template_token_ids=template_token_ids,
++            suffix_message_count=suffix_message_count,
++        )
++        if repaired_token_ids is not None:
++            return repaired_token_ids
++
++    if len(template_token_ids) <= len(template_prefix_token_ids):
++        repaired_token_ids = _qwen35_replace_prefix_from_suffix_messages(
++            eos_token_id=eos_token_id,
++            model_prefix_token_ids=model_prefix_token_ids,
++            template_token_ids=template_token_ids,
++            suffix_message_count=suffix_message_count,
++        )
++        if repaired_token_ids is not None:
++            return repaired_token_ids
+ 
+     # Assert here to prepare for the logic below
+     assert len(template_token_ids) > len(
+@@ -561,7 +639,12 @@ class VllmAsyncGenerationWorkerImpl(BaseVllmGenerationWorker):
+                     if message.get("tool_calls"):
+                         message["tool_calls"] = list(message["tool_calls"])
+ 
+-                messages_for_replace_prefix_tokens = deepcopy(messages)
++                    content = message.get("content")
++                    if content is not None and not isinstance(content, (list, str)):
++                        try:
++                            message["content"] = list(content)
++                        except TypeError:
++                            message["content"] = []
+ 
+                 # Temporarily set to 1 so vLLM's pre-tokenization length check passes;
+                 # the actual value will be set through _clamp_max_tokens later.
+@@ -611,6 +694,26 @@ class VllmAsyncGenerationWorkerImpl(BaseVllmGenerationWorker):
+                         )
+                     return res
+ 
++                # Copy the representation normalized by vLLM, but do not pass
++                # NeMo-Gym's token bookkeeping fields through the chat template.
++                excluded_fields = {
++                    "prompt_token_ids",
++                    "generation_token_ids",
++                    "generation_log_probs",
++                }
++                messages_for_replace_prefix_tokens = []
++                for message in messages:
++                    if isinstance(message, dict):
++                        messages_for_replace_prefix_tokens.append(
++                            {
++                                key: deepcopy(value)
++                                for key, value in message.items()
++                                if key not in excluded_fields
++                            }
++                        )
++                    else:
++                        messages_for_replace_prefix_tokens.append(deepcopy(message))
++
+                 last_assistant_message_idx = None
+                 for i in reversed(range(len(messages_for_replace_prefix_tokens))):
+                     if messages_for_replace_prefix_tokens[i]["role"] == "assistant":
+@@ -621,12 +724,18 @@ class VllmAsyncGenerationWorkerImpl(BaseVllmGenerationWorker):
+                     messages_to_last_assistant_message = (
+                         messages_for_replace_prefix_tokens
+                     )
++                    suffix_message_count = None
+                 else:
+                     messages_to_last_assistant_message = (
+                         messages_for_replace_prefix_tokens[
+                             : last_assistant_message_idx + 1
+                         ]
+                     )
++                    suffix_message_count = (
++                        len(messages_for_replace_prefix_tokens)
++                        - last_assistant_message_idx
++                        - 1
++                    )
+ 
+                 modified_request = request.model_copy(
+                     update={"add_generation_prompt": False}
+@@ -654,6 +763,7 @@ class VllmAsyncGenerationWorkerImpl(BaseVllmGenerationWorker):
+                     model_prefix_token_ids=request.required_prefix_token_ids,
+                     template_prefix_token_ids=actual_corresponding_token_ids,
+                     template_token_ids=engine_prompt["prompt_token_ids"],
++                    suffix_message_count=suffix_message_count,
+                 )
+ 
+                 engine_prompt["prompt_token_ids"] = final_prompt_token_ids

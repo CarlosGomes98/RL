@@ -35,6 +35,8 @@ COPY docker/gym/nightly-qwen35-moe-refit.patch \
     /tmp/nightly-qwen35-moe-refit.patch
 COPY docker/gym/qwen35-nightly-nemo-gym.patch \
     /tmp/qwen35-nightly-nemo-gym.patch
+COPY docker/gym/nightly-qwen35-multiturn-prefix.patch \
+    /tmp/nightly-qwen35-multiturn-prefix.patch
 
 RUN <<"EOF" bash -exu
 cd /opt/nemo-rl/3rdparty/Gym-workspace/Gym
@@ -69,6 +71,14 @@ else
     git apply --check /tmp/qwen35-nightly-nemo-gym.patch
 fi
 
+if git apply --check /tmp/nightly-qwen35-multiturn-prefix.patch; then
+    git apply /tmp/nightly-qwen35-multiturn-prefix.patch
+elif git apply --reverse --check /tmp/nightly-qwen35-multiturn-prefix.patch; then
+    echo "nightly-qwen35-multiturn-prefix.patch is already present in the nightly"
+else
+    git apply --check /tmp/nightly-qwen35-multiturn-prefix.patch
+fi
+
 if git apply --check /tmp/nightly-qwen35-moe-refit.patch; then
     git apply /tmp/nightly-qwen35-moe-refit.patch
 elif git apply --reverse --check /tmp/nightly-qwen35-moe-refit.patch; then
@@ -81,13 +91,17 @@ grep -F 'qwen35_moe_refit import load_policy_weights' \
     nemo_rl/models/generation/vllm/vllm_backend.py
 grep -F 'Treating this rollout as a masked zero-reward trajectory' \
     nemo_rl/environments/nemo_gym.py
+grep -F '_qwen35_replace_prefix_from_suffix_messages' \
+    nemo_rl/models/generation/vllm/vllm_worker_async.py
 python -m py_compile \
     nemo_rl/environments/nemo_gym.py \
     nemo_rl/models/generation/vllm/qwen35_moe_refit.py \
-    nemo_rl/models/generation/vllm/vllm_backend.py
+    nemo_rl/models/generation/vllm/vllm_backend.py \
+    nemo_rl/models/generation/vllm/vllm_worker_async.py
 python - <<'PY'
 import torch
 
+from nemo_rl.models.generation.vllm.vllm_worker_async import _replace_prefix_tokens
 from nemo_rl.models.generation.vllm.qwen35_moe_refit import (
     _copy_expert_tensor,
     _qwen35_moe_export_spec,
@@ -108,6 +122,24 @@ destination = torch.nn.Parameter(torch.zeros(1, 2, 3, 4))
 _copy_expert_tensor(destination, 0, source, "down_proj")
 expected = source.view(2, 4, 3).permute(0, 2, 1)
 torch.testing.assert_close(destination[0], expected)
+
+
+class _Tokenizer:
+    eos_token_id = 2
+
+    @staticmethod
+    def decode(token_ids):
+        return str(token_ids)
+
+
+repaired = _replace_prefix_tokens(
+    tokenizer=_Tokenizer(),
+    model_prefix_token_ids=[100, 101, 2],
+    template_prefix_token_ids=[9, 2, 20, 2, 30],
+    template_token_ids=[9, 2, 20, 2, 30],
+    suffix_message_count=1,
+)
+assert repaired == [100, 101, 2, 20, 2, 30]
 PY
 EOF
 
