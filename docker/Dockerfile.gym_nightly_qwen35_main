@@ -45,7 +45,6 @@ python - <<'PY'
 import importlib.metadata as metadata
 
 print("ray", metadata.version("ray"))
-print("nemo-gym", metadata.version("nemo-gym"))
 PY
 
 UV_LINK_MODE=symlink uv run python examples/nemo_gym/prefetch_venvs.py \
