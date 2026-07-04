@@ -18,7 +18,7 @@ set -euo pipefail
 PATCH_PATH="${1:-/tmp/vllm-ray-v2-tcpstore-port.patch}"
 VLLM_ACTOR_PYTHON="${VLLM_ACTOR_PYTHON:-/opt/ray_venvs/nemo_rl.models.generation.vllm.vllm_worker_async.VllmAsyncGenerationWorker/bin/python}"
 VLLM_SITE_PACKAGES=$("${VLLM_ACTOR_PYTHON}" -c \
-    'import pathlib, vllm; print(pathlib.Path(vllm.__file__).resolve().parent.parent)')
+    'import pathlib, vllm.v1.executor.ray_executor_v2 as m; print(pathlib.Path(m.__file__).resolve().parents[3])')
 VLLM_EXECUTOR_PATH="${VLLM_SITE_PACKAGES}/vllm/v1/executor/ray_executor_v2.py"
 
 if git -C "${VLLM_SITE_PACKAGES}" apply --check "${PATCH_PATH}"; then
