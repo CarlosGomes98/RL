@@ -1,138 +1,57 @@
 # syntax=docker/dockerfile:1
-# Reproducible Qwen35 Gym experiment image on top of a NeMo-RL nightly Gym
-# image. This keeps the nightly's /opt/nemo-rl checkout and overlays only the
-# Qwen35 recipe files and MLPerf/Gym patches from this branch.
+# Qwen3.5/MLPerf layer for a pinned NeMo-RL main nightly Gym image.
+# Keep this layer intentionally small: the nightly owns the NeMo-RL, Bridge,
+# Megatron-Core, vLLM, Ray, TransformerEngine, ModelOpt, and Gym dependency set.
 #
 # Example:
 #   docker buildx build \
 #     --platform linux/arm64 \
-#     --build-arg BASE_IMAGE=nvcr.io/nvidian/nemo-rl:5a26131-56315661-gym \
-#     -t <registry>/optimized:nemo-rl-nightly-qwen35-main-<nightly>-<sha> \
+#     --build-arg QWEN35_SOURCE_REF=$(git rev-parse HEAD) \
+#     -t <registry>/optimized:nemo-rl-nightly-qwen35-ea7c4f9-<source-sha> \
 #     --push \
 #     -f docker/Dockerfile.gym_nightly_qwen35_main .
 
-ARG BASE_IMAGE=nvcr.io/nvidian/nemo-rl:5a26131-56315661-gym
+ARG BASE_IMAGE=nvcr.io/nvidian/nemo-rl:ea7c4f9-56705042-gym
 FROM ${BASE_IMAGE}
 
-ARG TARGETARCH
 ARG QWEN35_SOURCE_REF=unknown
 ARG NEMO_GYM_PREFETCH_CONFIGS=qwen_35/configs/grpo_qwen35_397b_swe_openhands_async.yaml
-ARG NEMO_GYM_CUDA=
-ARG NEMO_GYM_VLLM_VERSION=
-ARG NEMO_RL_RAY_VERSION=2.55.1
 
-LABEL org.opencontainers.image.source-ref="${QWEN35_SOURCE_REF}"
+LABEL org.opencontainers.image.revision="${QWEN35_SOURCE_REF}"
+LABEL com.nvidia.nemo-rl.base="nvcr.io/nvidian/nemo-rl:ea7c4f9-56705042-gym"
 
 USER root
 WORKDIR /opt/nemo-rl
 
-ENV NRL_CONTAINER=1
-ENV RAY_ENABLE_UV_RUN_RUNTIME_ENV=0
-ENV NEMO_RL_VENV_DIR=/opt/ray_venvs
-ENV NEMO_GYM_VENV_DIR=/opt/gym_venvs
-ENV NEMO_RL_RAY_VERSION=${NEMO_RL_RAY_VERSION}
-
 COPY qwen_35/ /opt/nemo-rl/qwen_35/
-COPY examples/nemo_gym/launch_qwen35_nemo_gym_multinode_training.sh /opt/nemo-rl/examples/nemo_gym/launch_qwen35_nemo_gym_multinode_training.sh
-COPY docker/gym/mlperf-gym.patch /tmp/mlperf-gym.patch
+COPY examples/nemo_gym/launch_qwen35_nemo_gym_multinode_training.sh \
+    /opt/nemo-rl/examples/nemo_gym/launch_qwen35_nemo_gym_multinode_training.sh
 COPY docker/gym/qwen35-gym-vllm-model.patch /tmp/qwen35-gym-vllm-model.patch
-COPY docker/gym/qwen35-nightly-nemo-gym.patch /tmp/qwen35-nightly-nemo-gym.patch
-COPY docker/gym/prefetch_venvs.py /opt/nemo-rl/examples/nemo_gym/prefetch_venvs.py
-
-RUN <<"EOF" bash -exu -o pipefail
-test -d /opt/nemo-rl/3rdparty/Gym-workspace/Gym
-test -x /opt/nemo-rl/3rdparty/Gym-workspace/Gym/responses_api_agents/swe_agents/setup_scripts/openhands.sh
-
-if ! command -v apptainer >/dev/null 2>&1; then
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update
-    apt-get install -y --no-install-recommends \
-        ca-certificates \
-        software-properties-common
-    add-apt-repository -y ppa:apptainer/ppa
-    apt-get update
-    apt-get install -y --no-install-recommends apptainer
-    ln -sf /usr/bin/apptainer /usr/bin/singularity
-    apt-get clean
-    rm -rf /var/lib/apt/lists/*
-fi
-
-ln -sf "$(command -v apptainer)" /usr/bin/singularity
-EOF
-
-RUN <<"EOF" bash -exu
-cd /opt/nemo-rl/3rdparty/Gym-workspace/Gym
-if git apply --check /tmp/mlperf-gym.patch; then
-    git apply /tmp/mlperf-gym.patch
-elif git apply --reverse --check /tmp/mlperf-gym.patch; then
-    echo "mlperf-gym.patch is already applied"
-else
-    git apply --check /tmp/mlperf-gym.patch
-fi
-EOF
 
 RUN <<"EOF" bash -exu
 cd /opt/nemo-rl/3rdparty/Gym-workspace/Gym
 if git apply --check /tmp/qwen35-gym-vllm-model.patch; then
     git apply /tmp/qwen35-gym-vllm-model.patch
 elif git apply --reverse --check /tmp/qwen35-gym-vllm-model.patch; then
-    echo "qwen35-gym-vllm-model.patch is already applied"
+    echo "qwen35-gym-vllm-model.patch is already present in the nightly"
 else
     git apply --check /tmp/qwen35-gym-vllm-model.patch
 fi
 EOF
 
-RUN <<"EOF" bash -exu
-cd /opt/nemo-rl
-if git apply --check /tmp/qwen35-nightly-nemo-gym.patch; then
-    git apply /tmp/qwen35-nightly-nemo-gym.patch
-elif git apply --reverse --check /tmp/qwen35-nightly-nemo-gym.patch; then
-    echo "qwen35-nightly-nemo-gym.patch is already applied"
-else
-    git apply --check /tmp/qwen35-nightly-nemo-gym.patch
-fi
-EOF
-
 RUN <<"EOF" bash -exu -o pipefail
-if [[ -z "${NEMO_GYM_CUDA:-}" ]]; then
-    NEMO_GYM_CUDA=$(uv run python -c "import pathlib,tomllib; indexes=tomllib.loads(pathlib.Path('pyproject.toml').read_text())['tool']['uv']['index']; print(next(i['name'].removeprefix('pytorch-') for i in indexes if i['name'].startswith('pytorch-')))")
-fi
-
-UV_OVERRIDE_ARGS=()
-if [[ -n "${NEMO_GYM_VLLM_VERSION:-}" ]]; then
-    case "${TARGETARCH:-amd64}" in
-        arm64) WHEEL_ARCH=aarch64 ;;
-        *) WHEEL_ARCH=x86_64 ;;
-    esac
-    GYM_VLLM_OVERRIDE=/tmp/gym-vllm-override.txt
-    printf 'vllm @ https://github.com/vllm-project/vllm/releases/download/v%s/vllm-%s+%s-cp38-abi3-manylinux_2_35_%s.whl\n' \
-        "${NEMO_GYM_VLLM_VERSION}" "${NEMO_GYM_VLLM_VERSION}" "${NEMO_GYM_CUDA}" "${WHEEL_ARCH}" > "${GYM_VLLM_OVERRIDE}"
-    UV_OVERRIDE_ARGS=(UV_OVERRIDE="${GYM_VLLM_OVERRIDE}")
-fi
-
-env \
-    UV_TORCH_BACKEND="${NEMO_GYM_CUDA}" \
-    UV_LINK_MODE=hardlink \
-    "${UV_OVERRIDE_ARGS[@]}" \
-    uv run --extra nemo_gym python examples/nemo_gym/prefetch_venvs.py ${NEMO_GYM_PREFETCH_CONFIGS}
-
-uv run --extra nemo_gym python - <<'PY'
+command -v apptainer
+python - <<'PY'
 import importlib.metadata as metadata
-import os
 
-import nemo_gym  # noqa: F401
-import ray
-
-expected = os.environ["NEMO_RL_RAY_VERSION"]
-if ray.__version__ != expected:
-    raise SystemExit(f"ray version mismatch: expected {expected}, got {ray.__version__}")
-
-print("ray", ray.__version__)
+print("ray", metadata.version("ray"))
 print("nemo-gym", metadata.version("nemo-gym"))
 PY
 
-rm -f "${GYM_VLLM_OVERRIDE:-}"
+UV_LINK_MODE=symlink uv run python examples/nemo_gym/prefetch_venvs.py \
+    ${NEMO_GYM_PREFETCH_CONFIGS}
+
+python tools/generate_fingerprint.py > /opt/nemo_rl_container_fingerprint
 EOF
 
-RUN chmod +x /opt/nemo-rl/examples/nemo_gym/launch_qwen35_nemo_gym_multinode_training.sh && \
-    python tools/generate_fingerprint.py > /opt/nemo_rl_container_fingerprint
+RUN chmod +x /opt/nemo-rl/examples/nemo_gym/launch_qwen35_nemo_gym_multinode_training.sh
