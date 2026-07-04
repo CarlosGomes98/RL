@@ -29,6 +29,10 @@ COPY examples/nemo_gym/launch_qwen35_nemo_gym_multinode_training.sh \
 COPY docker/gym/qwen35-gym-vllm-model.patch /tmp/qwen35-gym-vllm-model.patch
 COPY docker/gym/nightly-swe-agent-apptainer-logs.patch \
     /tmp/nightly-swe-agent-apptainer-logs.patch
+COPY docker/gym/qwen35-nightly-moe-refit.py \
+    /opt/nemo-rl/nemo_rl/models/generation/vllm/qwen35_moe_refit.py
+COPY docker/gym/nightly-qwen35-moe-refit.patch \
+    /tmp/nightly-qwen35-moe-refit.patch
 
 RUN <<"EOF" bash -exu
 cd /opt/nemo-rl/3rdparty/Gym-workspace/Gym
@@ -46,9 +50,52 @@ done
 
 grep -F 'logs_dir.mkdir(parents=True, exist_ok=True)' \
     responses_api_agents/swe_agents/app.py
+grep -F 'NEMO_GYM_SWE_WORKSPACE_ROOT' \
+    responses_api_agents/swe_agents/app.py
 python -m py_compile \
     responses_api_agents/swe_agents/app.py \
     responses_api_models/vllm_model/app.py
+EOF
+
+RUN <<"EOF" bash -exu
+cd /opt/nemo-rl
+if git apply --check /tmp/nightly-qwen35-moe-refit.patch; then
+    git apply /tmp/nightly-qwen35-moe-refit.patch
+elif git apply --reverse --check /tmp/nightly-qwen35-moe-refit.patch; then
+    echo "nightly-qwen35-moe-refit.patch is already present in the nightly"
+else
+    git apply --check /tmp/nightly-qwen35-moe-refit.patch
+fi
+
+grep -F 'qwen35_moe_refit import load_policy_weights' \
+    nemo_rl/models/generation/vllm/vllm_backend.py
+python -m py_compile \
+    nemo_rl/models/generation/vllm/qwen35_moe_refit.py \
+    nemo_rl/models/generation/vllm/vllm_backend.py
+python - <<'PY'
+import torch
+
+from nemo_rl.models.generation.vllm.qwen35_moe_refit import (
+    _copy_expert_tensor,
+    _qwen35_moe_export_spec,
+)
+
+assert _qwen35_moe_export_spec(
+    "model.language_model.model.layers.3.mlp.experts.gate_up_proj"
+) == (3, "gate_up_proj")
+
+source = torch.arange(24, dtype=torch.float32).view(3, 8)
+destination = torch.nn.Parameter(torch.zeros(1, 2, 3, 4))
+_copy_expert_tensor(destination, 0, source, "gate_up_proj")
+expected = source.view(3, 2, 4).permute(1, 0, 2)
+torch.testing.assert_close(destination[0], expected)
+
+source = torch.arange(24, dtype=torch.float32).view(8, 3)
+destination = torch.nn.Parameter(torch.zeros(1, 2, 3, 4))
+_copy_expert_tensor(destination, 0, source, "down_proj")
+expected = source.view(2, 4, 3).permute(0, 2, 1)
+torch.testing.assert_close(destination[0], expected)
+PY
 EOF
 
 RUN <<"EOF" bash -exu -o pipefail

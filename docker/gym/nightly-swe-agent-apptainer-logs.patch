@@ -9,3 +9,13 @@ diff --git a/responses_api_agents/swe_agents/app.py b/responses_api_agents/swe_a
 +        logs_dir.mkdir(parents=True, exist_ok=True)
          log_file_path = logs_dir / f"{self.config.instance_id}_{command.mode}.log"
          log_file = open(log_file_path, "w")
+@@ -1638,6 +1638,8 @@ class SWEBenchWrapper(SimpleResponsesAPIAgent):
+     def model_post_init(self, context: Any) -> None:
+         run_session_id = f"{int(time.time() * 1000)}_{str(uuid.uuid4())[:8]}"
+-        workspace_root = Path(__file__).parent
++        workspace_root = Path(
++            os.environ.get("NEMO_GYM_SWE_WORKSPACE_ROOT", Path(__file__).parent)
++        )
+         self._swe_bench_wrapper_server_config = SWEBenchWrapperServerConfig(
+             run_session_id=run_session_id,
+             base_results_dir=workspace_root / f"swebench_results_{run_session_id}",

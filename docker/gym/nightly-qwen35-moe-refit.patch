@@ -1,0 +1,28 @@
+diff --git a/nemo_rl/models/generation/vllm/vllm_backend.py b/nemo_rl/models/generation/vllm/vllm_backend.py
+--- a/nemo_rl/models/generation/vllm/vllm_backend.py
++++ b/nemo_rl/models/generation/vllm/vllm_backend.py
+@@ -18,5 +18,6 @@ import torch
+ import zmq
+ 
++from nemo_rl.models.generation.vllm.qwen35_moe_refit import load_policy_weights
+ from nemo_rl.models.policy.utils import (
+     IPCProtocol,
+     calculate_aligned_size,
+@@ -324,7 +325,7 @@ class VllmInternalWorkerExtension:
+         if fp8.is_fp8_model(self.model_runner.vllm_config):
+             fp8.load_weights(policy_weights, self.model_runner)
+         else:
+-            self.model_runner.model.load_weights(weights=policy_weights)
++            load_policy_weights(policy_weights, self.model_runner)
+ 
+         self._load_draft_weights(draft_weights)
+ 
+@@ -452,6 +453,7 @@ class VllmInternalWorkerExtension:
+ 
+         except Exception as e:
+             print(
+-                f"Error in VllmInternalWorkerExtension.update_weights_from_collective: {e}"
++                "Error in VllmInternalWorkerExtension.update_weights_from_collective: "
++                f"{e}\n{traceback.format_exc()}"
+             )
+             return False
