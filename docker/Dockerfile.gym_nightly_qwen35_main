@@ -39,6 +39,8 @@ COPY docker/gym/nightly-qwen35-multiturn-prefix.patch \
     /tmp/nightly-qwen35-multiturn-prefix.patch
 COPY docker/gym/vllm-ray-v2-tcpstore-port.patch \
     /tmp/vllm-ray-v2-tcpstore-port.patch
+COPY docker/gym/apply_vllm_ray_v2_tcpstore_patch.sh \
+    /tmp/apply_vllm_ray_v2_tcpstore_patch.sh
 
 RUN <<"EOF" bash -exu
 cd /opt/nemo-rl/3rdparty/Gym-workspace/Gym
@@ -153,32 +155,7 @@ import importlib.metadata as metadata
 print("ray", metadata.version("ray"))
 PY
 
-VLLM_ACTOR_PYTHON=/opt/ray_venvs/nemo_rl.models.generation.vllm.vllm_worker_async.VllmAsyncGenerationWorker/bin/python
-VLLM_SITE_PACKAGES=$("${VLLM_ACTOR_PYTHON}" - <<'PY'
-import pathlib
-import vllm
-
-print(pathlib.Path(vllm.__file__).resolve().parent.parent)
-PY
-)
-git -C "${VLLM_SITE_PACKAGES}" apply --check \
-    /tmp/vllm-ray-v2-tcpstore-port.patch
-git -C "${VLLM_SITE_PACKAGES}" apply \
-    /tmp/vllm-ray-v2-tcpstore-port.patch
-grep -F 'def _select_tcpstore_port()' \
-    "${VLLM_SITE_PACKAGES}/vllm/v1/executor/ray_executor_v2.py"
-"${VLLM_ACTOR_PYTHON}" -m py_compile \
-    "${VLLM_SITE_PACKAGES}/vllm/v1/executor/ray_executor_v2.py"
-VLLM_PORT=20001 "${VLLM_ACTOR_PYTHON}" - <<'PY'
-from vllm.utils.network_utils import get_open_port
-from vllm.v1.executor.ray_executor_v2 import RayExecutorV2
-
-tcpstore_port = RayExecutorV2._select_tcpstore_port()
-mq_port = get_open_port()
-assert 20065 <= tcpstore_port <= 20096, tcpstore_port
-assert mq_port == 20001, mq_port
-assert tcpstore_port != mq_port
-PY
+bash /tmp/apply_vllm_ray_v2_tcpstore_patch.sh
 
 CONTAINER_HF_CKPT_PATH=/tmp/qwen35-hf-checkpoint \
 NEMO_GYM_SWE_TRAIN_DATA_PATH=/tmp/qwen35-train.jsonl \
