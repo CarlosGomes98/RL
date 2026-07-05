@@ -20,25 +20,27 @@ export SLURM_TIME="${SLURM_TIME:-00:40:00}"
 
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
-submit_replicas coreai_mlperf_training-grpo.smoke40m-gbs512-32p16g-lr1p5e-6-valp2-steps10-ckpt7-tp4pp2cp2ep32-vllmtp4 1 \
-    grpo.num_prompts_per_step=32 \
-    grpo.num_generations_per_prompt=16 \
-    policy.train_global_batch_size=512 \
+submit_replicas coreai_mlperf_training-grpo.smoke40m-1step-16p1g-tp4pp2cp1ep32-vllmtp4 1 \
+    grpo.num_prompts_per_step=16 \
+    grpo.num_generations_per_prompt=1 \
+    grpo.max_num_steps=1 \
+    grpo.val_at_start=False \
+    grpo.val_at_end=False \
+    policy.train_global_batch_size=16 \
+    policy.generation_batch_size=16 \
+    policy.generation.max_new_tokens=512 \
     policy.megatron_cfg.tensor_model_parallel_size=4 \
     policy.megatron_cfg.pipeline_model_parallel_size=2 \
-    policy.megatron_cfg.context_parallel_size=2 \
+    policy.megatron_cfg.context_parallel_size=1 \
     policy.megatron_cfg.sequence_parallel=true \
     policy.megatron_cfg.expert_model_parallel_size=32 \
-    policy.sequence_packing.enabled=true \
+    policy.sequence_packing.enabled=false \
     ++policy.megatron_cfg.attention_backend=flash \
     policy.generation.vllm_cfg.tensor_parallel_size=4 \
     policy.generation.vllm_cfg.expert_parallel_size=4 \
     policy.generation.vllm_cfg.gpu_memory_utilization=0.80 \
-    grpo.max_num_steps=10 \
-    grpo.val_period=2 \
-    grpo.val_at_start=False \
-    grpo.val_at_end=False \
-    policy.megatron_cfg.optimizer.lr=1.5e-6 \
-    policy.megatron_cfg.optimizer.min_lr=1.5e-6 \
-    checkpointing.enabled=True \
-    checkpointing.save_period=7
+    env.nemo_gym.swe_agents_train.responses_api_agents.swe_agents.agent_max_turns=2 \
+    env.nemo_gym.swe_agents_train.responses_api_agents.swe_agents.concurrency=16 \
+    env.nemo_gym.swe_agents_val.responses_api_agents.swe_agents.agent_max_turns=2 \
+    env.nemo_gym.swe_agents_val.responses_api_agents.swe_agents.concurrency=16 \
+    checkpointing.enabled=False
