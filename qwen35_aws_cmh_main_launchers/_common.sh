@@ -106,7 +106,7 @@ submit_replica() {
     fi
 
     echo "Submitting ${run_name} with grpo.seed=${seed}"
-    if ! output=$(EXP_NAME="${run_name}" SLURM_JOB_NAME="coreai_mlperf_training-grpo.main" GRPO_SEED="${seed}" "${LAUNCHER}" "${BASELINE_OVERRIDES[@]}" "$@" 2>&1); then
+    if ! output=$(EXP_NAME="${run_name}" SLURM_JOB_NAME="${run_name}" GRPO_SEED="${seed}" "${LAUNCHER}" "${BASELINE_OVERRIDES[@]}" "$@" 2>&1); then
         printf "%s\n" "${output}"
         return 1
     fi
