@@ -40,9 +40,9 @@ export NEMO_GYM_SWE_SIF_DIR="${NEMO_GYM_SWE_SIF_DIR:-/scratch/fsw/portfolios/cor
 export EXTRA_MOUNTS="${EXTRA_MOUNTS:-/dev/fuse:/dev/fuse}"
 export MLPERF_TARGET_ACCURACY="${MLPERF_TARGET_ACCURACY:-1.0}"
 export NEMO_RL_MEGATRON_POLICY_CUDA_MEMORY_FRACTION="${NEMO_RL_MEGATRON_POLICY_CUDA_MEMORY_FRACTION:-0.67}"
-# vLLM 0.20 defaults to the compiled-DAG Ray executor, which can hang during
-# multi-node TP. Its V2 executor keeps Ray placement while using MQ transport.
-export VLLM_USE_RAY_V2_EXECUTOR_BACKEND="${VLLM_USE_RAY_V2_EXECUTOR_BACKEND:-1}"
+# Use RayDistributedExecutor's compiled-graph backend. RayExecutorV2's MQ path
+# has timed out in sample_tokens during long multi-node Qwen 3.5 rollouts.
+export VLLM_USE_RAY_V2_EXECUTOR_BACKEND="${VLLM_USE_RAY_V2_EXECUTOR_BACKEND:-0}"
 
 BASELINE_OVERRIDES=(
     logger.wandb_enabled=False

@@ -304,7 +304,7 @@ in the inspected squashfs:
 | --- | --- |
 | Qwen launcher uses the documented `benchmarking` idle-GPU exemption, a 60-minute default, and an explicit GRPO/vLLM rollout-warmup description | Committed after `a301b30d5`; copied into the next image only |
 | Main Qwen config sets `megatron_cfg.attention_backend: flash` | Source-tree change after `a301b30d5`; copied into the next image only |
-| AWS launch helpers select the `a301b30d5` squashfs and force the Flash attention override | Host-only; makes the setting effective before the next image rebuild |
+| AWS launch helpers select the `a301b30d5` squashfs, force the Flash attention override, and select vLLM's compiled-DAG `RayDistributedExecutor` | Host-only; the Ray V2 image patch remains present but is inactive |
 | `nemo_rl/models/generation/vllm/vllm_worker_async.py` adds a lock around concurrent vLLM ZeroMQ multipart sends | Uncommitted and **not copied by this Dockerfile** |
 | `nemo_rl/models/megatron/setup.py` restores newer setup/checkpoint/draft/attention contracts | Uncommitted and **not copied by this Dockerfile** |
 | `nemo_rl/models/policy/workers/megatron_policy_worker.py` restores newer worker/refit/reference-policy contracts | Uncommitted and **not copied by this Dockerfile** |
