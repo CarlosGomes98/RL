@@ -20,6 +20,7 @@ VLLM_ACTOR_PYTHON="${VLLM_ACTOR_PYTHON:-/opt/ray_venvs/nemo_rl.models.generation
 VLLM_SITE_PACKAGES=$("${VLLM_ACTOR_PYTHON}" -c \
     'import pathlib, vllm.v1.executor.ray_executor_v2 as m; print(pathlib.Path(m.__file__).resolve().parents[3])')
 VLLM_EXECUTOR_PATH="${VLLM_SITE_PACKAGES}/vllm/v1/executor/ray_executor_v2.py"
+VLLM_MQ_PATH="${VLLM_SITE_PACKAGES}/vllm/distributed/device_communicators/shm_broadcast.py"
 
 if git -C "${VLLM_SITE_PACKAGES}" apply --check "${PATCH_PATH}"; then
     git -C "${VLLM_SITE_PACKAGES}" apply "${PATCH_PATH}"
@@ -30,8 +31,12 @@ else
 fi
 
 grep -F 'def _select_tcpstore_port()' "${VLLM_EXECUTOR_PATH}"
-"${VLLM_ACTOR_PYTHON}" -m py_compile "${VLLM_EXECUTOR_PATH}"
+grep -F 'bind_to_random_port' "${VLLM_MQ_PATH}"
+"${VLLM_ACTOR_PYTHON}" -m py_compile "${VLLM_EXECUTOR_PATH}" "${VLLM_MQ_PATH}"
 VLLM_PORT=20001 "${VLLM_ACTOR_PYTHON}" -c '
+from concurrent.futures import ThreadPoolExecutor
+
+from vllm.distributed.device_communicators.shm_broadcast import MessageQueue
 from vllm.utils.network_utils import get_open_port
 from vllm.v1.executor.ray_executor_v2 import RayExecutorV2
 
@@ -40,4 +45,18 @@ mq_port = get_open_port()
 assert 20065 <= tcpstore_port <= 20096, tcpstore_port
 assert mq_port == 20001, mq_port
 assert tcpstore_port != mq_port
+
+with ThreadPoolExecutor(max_workers=8) as executor:
+    queues = list(
+        executor.map(
+            lambda _: MessageQueue(1, 0, connect_ip="127.0.0.1"),
+            range(8),
+        )
+    )
+addresses = [queue.handle.remote_subscribe_addr for queue in queues]
+ports = [int(address.rsplit(":", 1)[1]) for address in addresses]
+assert len(set(ports)) == len(ports), ports
+assert all(20001 <= port < 20065 for port in ports), ports
+for queue in queues:
+    queue.remote_socket.close(linger=0)
 '
