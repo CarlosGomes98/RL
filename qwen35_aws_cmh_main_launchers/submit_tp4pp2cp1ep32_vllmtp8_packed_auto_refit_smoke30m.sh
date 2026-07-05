@@ -18,8 +18,8 @@ set -euo pipefail
 export SLURM_PARTITION="${SLURM_PARTITION:-batch}"
 export SLURM_TIME="${SLURM_TIME:-00:30:00}"
 export TRAIN_NODES=16
-export GEN_NODES=2
-export NODES=18
+export GEN_NODES=8
+export NODES=24
 export QWEN35_ATTENTION_BACKEND=auto
 
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
