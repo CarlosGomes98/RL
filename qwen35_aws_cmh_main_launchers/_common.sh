@@ -59,6 +59,7 @@ BASELINE_OVERRIDES=(
     policy.generation.vllm_cfg.enforce_eager=False
     ++policy.generation.vllm_kwargs.compilation_config.mode=0
     ++policy.generation.vllm_kwargs.compilation_config.cudagraph_mode=FULL_DECODE_ONLY
+    ++policy.generation.vllm_kwargs.distributed_timeout_seconds=1210
     ++policy.megatron_cfg.attention_backend="${QWEN35_ATTENTION_BACKEND}"
     policy.megatron_cfg.expert_model_parallel_size=32
     policy.megatron_cfg.scheduler.lr_warmup_iters=0
