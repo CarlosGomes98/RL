@@ -24,7 +24,7 @@ export QWEN35_ATTENTION_BACKEND=auto
 
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
-submit_replicas coreai_mlperf_training-grpo.gbs512-32p32g-lr1p5e-6-valp2-steps10-ckpt7-tp4pp2cp1ep32-vllmtp8-packed-auto-agentt1200-raydagt1210-native-loader 1 \
+submit_replicas coreai_mlperf_training-grpo.gbs512-32p32g-lr1p5e-6-valp2-steps10-ckpt7-tp4pp2cp1ep32-vllmtp8-packed-auto-noprefixcache-agentt1200-raydagt1210-native-loader 1 \
     grpo.num_prompts_per_step=32 \
     grpo.num_generations_per_prompt=16 \
     policy.train_global_batch_size=512 \
@@ -36,6 +36,7 @@ submit_replicas coreai_mlperf_training-grpo.gbs512-32p32g-lr1p5e-6-valp2-steps10
     policy.sequence_packing.enabled=true \
     policy.generation.vllm_cfg.tensor_parallel_size=8 \
     policy.generation.vllm_cfg.expert_parallel_size=8 \
+    policy.generation.vllm_cfg.enable_prefix_caching=false \
     env.nemo_gym.swe_agents_train.responses_api_agents.swe_agents.swebench_agent_timeout=1200 \
     env.nemo_gym.swe_agents_val.responses_api_agents.swe_agents.swebench_agent_timeout=1200 \
     grpo.max_num_steps=10 \
