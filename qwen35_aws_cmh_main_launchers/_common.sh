@@ -15,6 +15,10 @@
 
 set -euo pipefail
 
+# Do not leak a host virtual environment into the container's uv environment.
+unset VIRTUAL_ENV
+export CUDA_DEVICE_MAX_CONNECTIONS="${CUDA_DEVICE_MAX_CONNECTIONS:-1}"
+
 REPO_ROOT="${REPO_ROOT:-/lustre/fsw/portfolios/coreai/projects/coreai_mlperf_training/users/arigazzi/RL-main}"
 RESULTS_ROOT="${RESULTS_ROOT:-${REPO_ROOT}/results}"
 LAUNCHER="${LAUNCHER:-${REPO_ROOT}/examples/nemo_gym/launch_qwen35_nemo_gym_multinode_training.sh}"
