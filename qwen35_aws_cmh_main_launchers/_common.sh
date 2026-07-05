@@ -56,10 +56,8 @@ BASELINE_OVERRIDES=(
     grpo.async_grpo.max_trajectory_age_steps=1
     env.nemo_gym.swe_agents_train.responses_api_agents.swe_agents.concurrency=128
     env.nemo_gym.swe_agents_val.responses_api_agents.swe_agents.concurrency=128
-    policy.generation.vllm_cfg.enforce_eager=False
-    ++policy.generation.vllm_kwargs.compilation_config.mode=0
-    ++policy.generation.vllm_kwargs.compilation_config.cudagraph_mode=FULL_DECODE_ONLY
-    ++policy.generation.vllm_kwargs.distributed_timeout_seconds=1210
+    # vLLM 0.20 can deadlock Qwen 3.5 multi-node decode with CUDA graphs.
+    policy.generation.vllm_cfg.enforce_eager=True
     ++policy.megatron_cfg.attention_backend="${QWEN35_ATTENTION_BACKEND}"
     policy.megatron_cfg.expert_model_parallel_size=32
     policy.megatron_cfg.scheduler.lr_warmup_iters=0
