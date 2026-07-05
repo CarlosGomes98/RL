@@ -298,6 +298,9 @@ chmod +x /launch-head.sh
 count=0
 while [[ \$count -lt $num_retries ]]; do
   bash /launch-head.sh
+  failure_log_dir="$LOG_DIR/ray/head-attempt-\$((count + 1))"
+  mkdir -p "\$failure_log_dir"
+  cp -a /tmp/ray/session_latest/logs/. "\$failure_log_dir/" 2>/dev/null || true
   count=\$((count+1))
   echo "Head node failed \$count/$num_retries times, restarting in 5 seconds..."
   sleep 5
