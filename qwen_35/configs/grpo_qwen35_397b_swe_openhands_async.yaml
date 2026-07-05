@@ -124,6 +124,7 @@ policy:
     gradient_accumulation_fusion: false
     use_fused_weighted_squared_relu: false
     apply_rope_fusion: false
+    attention_backend: flash
     defer_fp32_logits: true
     optimizer:
       optimizer: adam

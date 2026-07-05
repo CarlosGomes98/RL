@@ -20,7 +20,7 @@ export SLURM_TIME="${SLURM_TIME:-06:00:00}"
 
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
-submit_replicas coreai_mlperf_training-grpo.gbs512-32p16g-lr1p5e-6-valp2-steps10-ckpt7-tp4pp2ep32 1 \
+submit_replicas coreai_mlperf_training-grpo.gbs512-32p16g-lr1p5e-6-valp2-steps10-ckpt7-tp4pp2cp1ep32-flash 1 \
     grpo.num_prompts_per_step=32 \
     grpo.num_generations_per_prompt=16 \
     policy.train_global_batch_size=512 \

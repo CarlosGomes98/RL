@@ -171,7 +171,7 @@ echo -e "Running command:\n$COMMAND"
 # Async rollout collection can legitimately idle the training GPU pool while
 # the replay buffer fills. Use the cluster's documented benchmarking exemption.
 SLURM_IDLE_EXEMPT_MINS="${SLURM_IDLE_EXEMPT_MINS:-60}"
-SLURM_COMMENT="${SLURM_COMMENT:-{\"OccupiedIdleGPUsJobReaper\":{\"exemptIdleTimeMins\":\"${SLURM_IDLE_EXEMPT_MINS}\",\"reason\":\"benchmarking\",\"description\":\"NeMo-RL GRPO benchmark: training GPUs wait for rollout buffer fill\"}}}"
+SLURM_COMMENT="${SLURM_COMMENT:-{\"OccupiedIdleGPUsJobReaper\":{\"exemptIdleTimeMins\":\"${SLURM_IDLE_EXEMPT_MINS}\",\"reason\":\"benchmarking\",\"description\":\"Benchmarking GRPO with NeMo-RL and vLLM: idle GPU times are due to rollouts and warmup phases\"}}}"
 
 
 # Host paths above are mounted to stable container paths consumed by the YAML.

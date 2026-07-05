@@ -20,7 +20,7 @@ RESULTS_ROOT="${RESULTS_ROOT:-${REPO_ROOT}/results}"
 LAUNCHER="${LAUNCHER:-${REPO_ROOT}/examples/nemo_gym/launch_qwen35_nemo_gym_multinode_training.sh}"
 
 export REPO_LOCATION="${REPO_LOCATION:-${REPO_ROOT}}"
-DEFAULT_QWEN35_CONTAINER_IMAGE_PATH="/lustre/fsw/portfolios/coreai/projects/coreai_mlperf_training/containers/dl+mlperf+optimized+nemo-rl-nightly-qwen35-ea7c4f9-83b9f1838.sqsh"
+DEFAULT_QWEN35_CONTAINER_IMAGE_PATH="/lustre/fsw/portfolios/coreai/projects/coreai_mlperf_training/containers/dl+mlperf+optimized+nemo-rl-nightly-qwen35-ea7c4f9-a301b30d5.sqsh"
 export CONTAINER_IMAGE_PATH="${QWEN35_CONTAINER_IMAGE_PATH:-${CONTAINER_IMAGE_PATH:-${DEFAULT_QWEN35_CONTAINER_IMAGE_PATH}}}"
 export SLURM_ACCOUNT="${SLURM_ACCOUNT:-coreai_mlperf_training}"
 export SLURM_PARTITION="${SLURM_PARTITION:-batch}"
@@ -50,6 +50,7 @@ BASELINE_OVERRIDES=(
     env.nemo_gym.swe_agents_train.responses_api_agents.swe_agents.concurrency=128
     env.nemo_gym.swe_agents_val.responses_api_agents.swe_agents.concurrency=128
     policy.generation.vllm_cfg.enforce_eager=True
+    ++policy.megatron_cfg.attention_backend=flash
     policy.megatron_cfg.expert_model_parallel_size=32
     policy.megatron_cfg.scheduler.lr_warmup_iters=0
 )

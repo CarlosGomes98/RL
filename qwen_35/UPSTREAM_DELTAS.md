@@ -302,8 +302,9 @@ in the inspected squashfs:
 
 | Change | Current effect |
 | --- | --- |
-| Qwen launcher uses the documented `benchmarking` idle-GPU exemption and a 60-minute default | Committed after `a301b30d5`; copied into the next image only |
-| Main Qwen config sets `megatron_cfg.attention_backend: flash` | Uncommitted at this snapshot; copied into the next image if retained |
+| Qwen launcher uses the documented `benchmarking` idle-GPU exemption, a 60-minute default, and an explicit GRPO/vLLM rollout-warmup description | Committed after `a301b30d5`; copied into the next image only |
+| Main Qwen config sets `megatron_cfg.attention_backend: flash` | Source-tree change after `a301b30d5`; copied into the next image only |
+| AWS launch helpers select the `a301b30d5` squashfs and force the Flash attention override | Host-only; makes the setting effective before the next image rebuild |
 | `nemo_rl/models/generation/vllm/vllm_worker_async.py` adds a lock around concurrent vLLM ZeroMQ multipart sends | Uncommitted and **not copied by this Dockerfile** |
 | `nemo_rl/models/megatron/setup.py` restores newer setup/checkpoint/draft/attention contracts | Uncommitted and **not copied by this Dockerfile** |
 | `nemo_rl/models/policy/workers/megatron_policy_worker.py` restores newer worker/refit/reference-policy contracts | Uncommitted and **not copied by this Dockerfile** |
@@ -315,7 +316,7 @@ are:
 | File | Current SHA-256 |
 | --- | --- |
 | Main Qwen config | `4e4bff8bca959c2419f70dc6d26b4bb3e8a87ef66e8022dc8118d8963e45c01c` |
-| Qwen launcher | `9573355a129a72368d0fe43764b4f480e2da022504cb0b4a806db7f23a5f779c` |
+| Qwen launcher | `86ff737694ad4e687cbc570e5ffa9fd50e510e96a348a4025b226e318b98ec00` |
 
 Do not claim that a branch fix is in a container unless the Dockerfile copies or
 patches that file and the resulting registry digest was rebuilt after the fix.
