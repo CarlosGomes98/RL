@@ -57,6 +57,7 @@ BASELINE_OVERRIDES=(
     env.nemo_gym.swe_agents_train.responses_api_agents.swe_agents.concurrency=128
     env.nemo_gym.swe_agents_val.responses_api_agents.swe_agents.concurrency=128
     policy.generation.vllm_cfg.enforce_eager=False
+    policy.generation.vllm_kwargs.compilation_config.backend=eager
     ++policy.megatron_cfg.attention_backend="${QWEN35_ATTENTION_BACKEND}"
     policy.megatron_cfg.expert_model_parallel_size=32
     policy.megatron_cfg.scheduler.lr_warmup_iters=0
