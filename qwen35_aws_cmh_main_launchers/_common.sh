@@ -43,6 +43,9 @@ export NEMO_RL_MEGATRON_POLICY_CUDA_MEMORY_FRACTION="${NEMO_RL_MEGATRON_POLICY_C
 # Use RayDistributedExecutor's compiled-graph backend. RayExecutorV2's MQ path
 # has timed out in sample_tokens during long multi-node Qwen 3.5 rollouts.
 export VLLM_USE_RAY_V2_EXECUTOR_BACKEND="${VLLM_USE_RAY_V2_EXECUTOR_BACKEND:-0}"
+# Allow long rollout-driven model steps to complete before Ray times out.
+export RAY_CGRAPH_get_timeout="${RAY_CGRAPH_get_timeout:-1210}"
+QWEN35_ATTENTION_BACKEND="${QWEN35_ATTENTION_BACKEND:-flash}"
 
 BASELINE_OVERRIDES=(
     logger.wandb_enabled=False
@@ -50,7 +53,7 @@ BASELINE_OVERRIDES=(
     env.nemo_gym.swe_agents_train.responses_api_agents.swe_agents.concurrency=128
     env.nemo_gym.swe_agents_val.responses_api_agents.swe_agents.concurrency=128
     policy.generation.vllm_cfg.enforce_eager=True
-    ++policy.megatron_cfg.attention_backend=flash
+    ++policy.megatron_cfg.attention_backend="${QWEN35_ATTENTION_BACKEND}"
     policy.megatron_cfg.expert_model_parallel_size=32
     policy.megatron_cfg.scheduler.lr_warmup_iters=0
 )
