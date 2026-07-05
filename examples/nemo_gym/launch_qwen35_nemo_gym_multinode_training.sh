@@ -168,11 +168,9 @@ EOF
 
 echo -e "Running command:\n$COMMAND"
 
-# OccupiedIdleGPUsJobReaper exemption: async (non-colocated) legitimately idles its
-# training-node GPU pool while the replay buffer fills from slow SWE reward computation,
-# which otherwise trips the idle-GPU reaper. Override via SLURM_COMMENT env if needed.
-SLURM_IDLE_EXEMPT_MINS="${SLURM_IDLE_EXEMPT_MINS:-120}"
-SLURM_COMMENT="${SLURM_COMMENT:-{\"OccupiedIdleGPUsJobReaper\":{\"exemptIdleTimeMins\":\"${SLURM_IDLE_EXEMPT_MINS}\",\"reason\":\"rl-rollout-warmup\",\"description\":\"NeMo-RL GRPO: training GPUs idle during rollout/SWE-reward buffer-fill\"}}}"
+# Async rollout collection can legitimately idle the training GPU pool while
+# the replay buffer fills. Use the cluster's documented benchmarking exemption.
+SLURM_COMMENT="${SLURM_COMMENT:-benchmarking}"
 
 
 # Host paths above are mounted to stable container paths consumed by the YAML.
