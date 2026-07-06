@@ -28,8 +28,10 @@ COPY examples/nemo_gym/launch_qwen35_nemo_gym_multinode_training.sh \
     /opt/nemo-rl/examples/nemo_gym/launch_qwen35_nemo_gym_multinode_training.sh
 # Keep the source override surface explicit. These files contain the Qwen async
 # initialization, refit, distributed-timeout, and vLLM transport fixes carried
-# by this branch; dependencies and all other NeMo-RL modules remain from nightly.
-COPY nemo_rl/algorithms/grpo.py /opt/nemo-rl/nemo_rl/algorithms/grpo.py
+# by this branch. Apart from the pinned MLPerf packages installed below,
+# dependencies and all other NeMo-RL modules remain from nightly.
+COPY nemo_rl/algorithms/mlperf_grpo_logging.py \
+    /opt/nemo-rl/nemo_rl/algorithms/mlperf_grpo_logging.py
 COPY nemo_rl/models/generation/vllm/vllm_backend.py \
     /opt/nemo-rl/nemo_rl/models/generation/vllm/vllm_backend.py
 COPY nemo_rl/models/generation/vllm/vllm_worker_async.py \
@@ -47,6 +49,7 @@ COPY docker/gym/nightly-gym-bounded-transient-retries.patch \
     /tmp/nightly-gym-bounded-transient-retries.patch
 COPY docker/gym/qwen35-nightly-nemo-gym.patch \
     /tmp/qwen35-nightly-nemo-gym.patch
+COPY docker/gym/qwen35-nightly-grpo.patch /tmp/qwen35-nightly-grpo.patch
 COPY docker/gym/vllm-ray-v2-tcpstore-port.patch \
     /tmp/vllm-ray-v2-tcpstore-port.patch
 COPY docker/gym/apply_vllm_ray_v2_tcpstore_patch.sh \
@@ -80,13 +83,17 @@ EOF
 
 RUN <<"EOF" bash -exu
 cd /opt/nemo-rl
-if git apply --check /tmp/qwen35-nightly-nemo-gym.patch; then
-    git apply /tmp/qwen35-nightly-nemo-gym.patch
-elif git apply --reverse --check /tmp/qwen35-nightly-nemo-gym.patch; then
-    echo "qwen35-nightly-nemo-gym.patch is already present in the nightly"
-else
-    git apply --check /tmp/qwen35-nightly-nemo-gym.patch
-fi
+for patch in \
+    /tmp/qwen35-nightly-nemo-gym.patch \
+    /tmp/qwen35-nightly-grpo.patch; do
+    if git apply --check "${patch}"; then
+        git apply "${patch}"
+    elif git apply --reverse --check "${patch}"; then
+        echo "$(basename "${patch}") is already present in the nightly"
+    else
+        git apply --check "${patch}"
+    fi
+done
 
 grep -F 'Treating this rollout as a masked zero-reward trajectory' \
     nemo_rl/environments/nemo_gym.py
@@ -98,9 +105,12 @@ grep -F 'NRL_NCCL_TIMEOUT_MINUTES' \
     nemo_rl/models/megatron/setup.py
 grep -F 'apply_transformer_engine_sm103_flash_attention_patch' \
     nemo_rl/models/policy/workers/patches.py
-grep -F 'collection must not' nemo_rl/algorithms/grpo.py
+grep -F 'Generation engines start with dummy weights' nemo_rl/algorithms/grpo.py
+grep -F 'create_mlperf_logger' examples/nemo_gym/run_grpo_nemo_gym.py
 python -m py_compile \
+    examples/nemo_gym/run_grpo_nemo_gym.py \
     nemo_rl/algorithms/grpo.py \
+    nemo_rl/algorithms/mlperf_grpo_logging.py \
     nemo_rl/environments/nemo_gym.py \
     nemo_rl/models/generation/vllm/vllm_backend.py \
     nemo_rl/models/generation/vllm/vllm_worker_async.py \
@@ -140,11 +150,6 @@ PY
 
 bash /tmp/apply_vllm_ray_v2_tcpstore_patch.sh
 
-# The driver intentionally does not install the optional MCore dependency;
-# Megatron is provided in policy actor environments. Verify that driver imports
-# remain lazy before publishing the image.
-uv run --no-sync python -c 'from nemo_rl.algorithms import grpo'
-
 CONTAINER_HF_CKPT_PATH=/tmp/qwen35-hf-checkpoint \
 NEMO_GYM_SWE_TRAIN_DATA_PATH=/tmp/qwen35-train.jsonl \
 NEMO_GYM_SWE_VALIDATION_DATA_PATH=/tmp/qwen35-validation.jsonl \
@@ -152,6 +157,16 @@ NEMO_GYM_SWE_SIF_DIR=/tmp/qwen35-sif \
 UV_LINK_MODE=copy \
     uv run python examples/nemo_gym/prefetch_venvs.py \
         ${NEMO_GYM_PREFETCH_CONFIGS}
+
+uv pip install --python /opt/nemo_rl_venv/bin/python \
+    'mlperf-common @ git+https://github.com/NVIDIA/mlperf-common.git@c02c93c0414071400a10716d9cd5cb8f668b78d4' \
+    'mlperf-logging @ git+https://github.com/mlcommons/logging.git@3d17f6fb6047955159b69d9c2415317f163fbe43'
+
+# The driver intentionally does not install the optional MCore dependency;
+# Megatron is provided in policy actor environments. Verify the patched driver,
+# including its explicitly pinned MLPerf dependencies, before publishing.
+uv run --no-sync python -c \
+    'import mlperf_common, mlperf_logging; from nemo_rl.algorithms import grpo'
 
 /opt/nemo-rl/3rdparty/Gym-workspace/Gym/responses_api_agents/swe_agents/swe_r2e_gym_setup/R2E-Gym/venv/bin/python \
     -c 'import docker, kubernetes, openai, r2egym, rich, yaml'

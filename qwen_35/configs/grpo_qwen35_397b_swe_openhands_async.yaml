@@ -343,6 +343,12 @@ env:
 logger:
   log_dir: logs
   num_val_samples_to_print: 0
+  mlperf_enabled: false
+  mlperf:
+    benchmark: qwen35_397b_grpo_swe
+    log_file: null
+    target_accuracy: 1.0
+    force_success_status: false
   wandb_enabled: false
   tensorboard_enabled: true
   mlflow_enabled: false

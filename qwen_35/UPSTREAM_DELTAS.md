@@ -310,6 +310,7 @@ registry digest recorded.
 | Main Qwen config sets `megatron_cfg.attention_backend: flash` | Source-tree change after `a301b30d5`; copied into the next image only |
 | AWS launch helpers select the `a301b30d5` squashfs, force the Flash attention override, and select vLLM's compiled-DAG `RayDistributedExecutor` | Host-only; the Ray V2 image patch remains present but is inactive |
 | Async GRPO starts background trajectory collection only after the initial policy-to-generation refit | Prevents requests from being served from vLLM's dummy initialization; source overlay or rebuilt image required |
+| `qwen35-nightly-grpo.patch` modifies the pinned GRPO driver and NeMo-Gym entry point; `mlperf_grpo_logging.py` is added separately | Keeps the nightly GRPO implementation while adding initial-refit ordering, validation-only sampling, and async MLPerf lifecycle hooks without a host-source overlay |
 | Qwen 3.5 MoE refit splits stacked expert exports on the policy sender and delegates all writes to vLLM's native loader | Replaces the D4 model-internal copier; source overlay or rebuilt image required |
 | Qwen config selects the Triton MoE backend | Keeps native vLLM refit tensors in the standard per-expert layout |
 | Qwen config enables sequence packing | Matches the current Megatron-Core GDN packed-sequence support and requires a distributed training smoke |
@@ -408,6 +409,38 @@ explicit rollout-failure policy to run. It does not convert the request into a
 success or reward. The 120-second window is independent of the 1200-second
 agent and test timeouts; it applies only to a continuously disconnected HTTP
 transport.
+
+### Candidate D13: Qwen Async Ordering, Validation Sampling, and MLPerf Logging
+
+| Field | Value |
+| --- | --- |
+| Upstream component | NeMo-RL |
+| Targets | `nemo_rl/algorithms/grpo.py` and `examples/nemo_gym/run_grpo_nemo_gym.py` |
+| Patch | `docker/gym/qwen35-nightly-grpo.patch` |
+| Size | 125 insertions, 18 deletions across the two pinned nightly files |
+| Added module | `nemo_rl/algorithms/mlperf_grpo_logging.py` |
+| Added packages | `mlperf-common` at `c02c93c0414071400a10716d9cd5cb8f668b78d4`; `mlperf-logging` at `3d17f6fb6047955159b69d9c2415317f163fbe43` (tag `6.0.0-rc6`) |
+| Status | Required Qwen async correctness and benchmark logging integration |
+
+The Dockerfile previously replaced the pinned nightly's entire `grpo.py` with
+the older branch file. That widened the delta by thousands of lines and was
+incompatible with the nightly API (`SGLangConfig` was one immediate import
+failure). The candidate instead applies a guarded patch to the exact pinned
+nightly files. It makes four scoped changes:
+
+1. Start async trajectory collection only after the generation engines receive
+   the initial policy weights.
+2. Preserve the recipe's validation-only `temperature` and `top_p` while leaving
+   training generation parameters unchanged.
+3. Emit MLPerf init, block, evaluation, tracked-stat, and run-stop events for the
+   async GRPO path.
+4. Validate the patched driver import at build time without installing Megatron
+   in the driver environment; Megatron remains actor-only.
+
+The two MLPerf packages are the only candidate dependency additions to the NGC
+base. Both are pinned to the same revisions used by the branch lock file. The
+patch rejects MLPerf logging for synchronous GRPO rather than silently emitting
+an incomplete event stream.
 
 The audited-image hashes above remain the identity of `a301b30d5`. Candidate
 working-tree files must receive new hashes only after they are committed and a

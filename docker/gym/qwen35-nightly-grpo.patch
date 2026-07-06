@@ -1,0 +1,334 @@
+diff --git a/examples/nemo_gym/run_grpo_nemo_gym.py b/examples/nemo_gym/run_grpo_nemo_gym.py
+index 25a2c1849..28f5ce669 100644
+--- a/examples/nemo_gym/run_grpo_nemo_gym.py
++++ b/examples/nemo_gym/run_grpo_nemo_gym.py
+@@ -13,6 +13,7 @@
+ # limitations under the License.
+ 
+ import argparse
++import atexit
+ import os
+ import pprint
+ 
+@@ -37,6 +38,7 @@ from nemo_rl.algorithms.grpo import (
+     refit_policy_generation,
+     setup,
+ )
++from nemo_rl.algorithms.mlperf_grpo_logging import create_mlperf_logger
+ from nemo_rl.algorithms.utils import get_tokenizer
+ from nemo_rl.data.utils import setup_response_data
+ from nemo_rl.distributed.virtual_cluster import init_ray
+@@ -145,6 +147,14 @@ def main() -> None:
+             f"📊 Using checkpoint directory: {config.checkpointing['checkpoint_dir']}"
+         )
+ 
++    mlperf_logger = create_mlperf_logger(config.model_dump())
++    if mlperf_logger is not None:
++        async_grpo_config = config.grpo.get("async_grpo")
++        if async_grpo_config is None or not async_grpo_config["enabled"]:
++            raise ValueError("MLPerf logging is supported only for async GRPO")
++        mlperf_logger.log_init_start()
++        atexit.register(mlperf_logger.finalize)
++
+     # setup tokenizer
+     tokenizer = get_tokenizer(config.policy["tokenizer"])
+     assert config.policy["generation"] is not None, (
+@@ -183,6 +193,9 @@ The validation set you pass in will directly be used for validation with no addi
+         config.grpo["max_val_samples"] = len(val_dataset)
+         config.grpo["val_batch_size"] = config.grpo["max_val_samples"]
+ 
++    if mlperf_logger is not None:
++        mlperf_logger.log_hyperparams(train_dataset, val_dataset)
++
+     # Print config
+     print("Final config:")
+     pprint.pprint(config)
+@@ -280,6 +293,7 @@ The validation set you pass in will directly be used for validation with no addi
+             max_trajectory_age_steps=async_config["max_trajectory_age_steps"],
+             teacher_worker_groups=teacher_worker_groups,
+             alias_to_group_alias=alias_to_group_alias,
++            mlperf_logger=mlperf_logger,
+         )
+     else:
+         print("🚀 Running synchronous GRPO training")
+diff --git a/nemo_rl/algorithms/grpo.py b/nemo_rl/algorithms/grpo.py
+index 76d75c824..8ec7b7a8a 100644
+--- a/nemo_rl/algorithms/grpo.py
++++ b/nemo_rl/algorithms/grpo.py
+@@ -41,6 +41,7 @@ from nemo_rl.algorithms.loss import (
+     ClippedPGLossFn,
+ )
+ from nemo_rl.algorithms.loss.interfaces import LossFunction
++from nemo_rl.algorithms.mlperf_grpo_logging import MLPerfGRPOLogger
+ from nemo_rl.algorithms.opd import OnPolicyDistillationConfig
+ from nemo_rl.algorithms.reward_functions import (
+     RewardShapingConfig,
+@@ -157,6 +158,13 @@ class AdvEstimatorConfig(TypedDict):
+     minus_baseline: NotRequired[bool]
+ 
+ 
++class ValidationGenerationConfig(TypedDict):
++    """Optional validation-only sampling parameters."""
++
++    temperature: float
++    top_p: float
++
++
+ class GRPOConfig(TypedDict):
+     num_prompts_per_step: int
+     num_generations_per_prompt: int
+@@ -177,6 +185,7 @@ class GRPOConfig(TypedDict):
+     # final checkpoint has validation metrics, which is required for get_best_checkpoint_path().
+     val_at_end: bool
+     max_val_samples: int | None  # None for NeMo-Gym compatibility
++    validation_generation: NotRequired[ValidationGenerationConfig | None]
+     skip_reference_policy_logprobs_calculation: NotRequired[bool]
+     seed: int
+     async_grpo: NotRequired[AsyncGRPOConfig]
+@@ -229,8 +238,20 @@ def _default_grpo_save_state() -> GRPOSaveState:
+     }
+ 
+ 
++class MLPerfLoggerConfig(TypedDict):
++    """MLPerf event-stream settings used when MLPerf logging is enabled."""
++
++    benchmark: str
++    log_file: str | None
++    target_accuracy: float
++    force_success_status: bool
++
++
+ class GRPOLoggerConfig(LoggerConfig):
+     num_val_samples_to_print: int  # number of val samples to print to stdout
++    # Optional for non-MLPerf recipes; Qwen sets the recommended default to false.
++    mlperf_enabled: NotRequired[bool]
++    mlperf: NotRequired[MLPerfLoggerConfig]
+ 
+ 
+ class MasterConfig(BaseModel, extra="allow"):
+@@ -303,6 +324,11 @@ def setup(
+     assert generation_config is not None, (
+         "A generation config in the PolicyConfig is required for GRPO"
+     )
++    validation_generation_config = grpo_config.get("validation_generation")
++    if validation_generation_config is not None:
++        generation_config["_validation_generation"] = dict(
++            validation_generation_config
++        )
+ 
+     # Set seed for all random number generators
+     set_seed(grpo_config["seed"])
+@@ -3160,6 +3186,13 @@ def validate(
+         total_rewards = []
+         total_lengths = []
+         all_message_logs = []  # Collect all message logs
++        validation_generation_config = master_config.grpo.get(
++            "validation_generation"
++        )
++        use_nemo_gym = _should_use_nemo_gym(master_config)
++        assert validation_generation_config is None or use_nemo_gym, (
++            "grpo.validation_generation is only supported for NeMo-Gym validation."
++        )
+ 
+         max_batches = (
+             master_config.grpo["max_val_samples"]
+@@ -3173,8 +3206,14 @@ def validate(
+             # Generate responses (updates the LLMMessageLogType in batch_with_msg_logs)
+             # Use async rollouts when enabled by config/backend defaults.
+             # We cascade NeMo-Gym first since NeMo-Gym also uses async rollouts.
+-            if _should_use_nemo_gym(master_config):
++            if use_nemo_gym:
+                 generation_config = master_config.policy["generation"]
++                if validation_generation_config is not None:
++                    generation_config = dict(generation_config)
++                    generation_config["temperature"] = validation_generation_config[
++                        "temperature"
++                    ]
++                    generation_config["top_p"] = validation_generation_config["top_p"]
+                 nemo_gym_rollout_result = run_async_nemo_gym_rollout(
+                     policy_generation=policy_generation,
+                     input_batch=val_batch,
+@@ -3338,6 +3377,7 @@ def async_grpo_train(
+     max_trajectory_age_steps: int = 1,
+     teacher_worker_groups: Optional[dict[str, Any]] = None,
+     alias_to_group_alias: Optional[dict[str, str]] = None,
++    mlperf_logger: Optional[MLPerfGRPOLogger] = None,
+ ) -> None:
+     """Run asynchronous GRPO training with replay buffer.
+ 
+@@ -3355,6 +3395,7 @@ def async_grpo_train(
+         grpo_save_state: Training state
+         master_config: Master configuration
+         max_trajectory_age_steps: Maximum age (in training steps) for trajectories to be used in training
++        mlperf_logger: Optional MLPerf GRPO logger
+     """
+     # Ensure we are running with a compatible async generation backend.
+     # Async GRPO (with in-flight weight updates) supports vLLM and Megatron;
+@@ -3534,14 +3575,6 @@ def async_grpo_train(
+         on_policy_distillation_cfg=opd_module._opd_cfg(master_config),
+     )
+ 
+-    # Start trajectory collection in background
+-    collection_task = trajectory_collector.start_collection.remote(dataloader)
+-
+-    # Ensure collector knows initial weight version
+-    trajectory_collector.set_weight_version.remote(weight_version)
+-
+-    print("📦 Started continuous background trajectory collection")
+-
+     print(
+         f"🚀 Starting async GRPO training with buffer_size={optimal_buffer_size}, max_age={max_trajectory_age_steps} steps"
+     )
+@@ -3558,6 +3591,8 @@ def async_grpo_train(
+             import traceback
+ 
+             traceback.print_exc()
++            if mlperf_logger is not None:
++                mlperf_logger.finalize()
+             return
+     else:
+         print("🔄 Preparing policy generation for inference...")
+@@ -3569,8 +3604,23 @@ def async_grpo_train(
+             import traceback
+ 
+             traceback.print_exc()
++            if mlperf_logger is not None:
++                mlperf_logger.finalize()
+             return
+ 
++    if mlperf_logger is not None:
++        mlperf_logger.log_init_stop_run_start()
++        if not (val_at_start and step == 0):
++            mlperf_logger.start_train_block(step)
++
++    # Generation engines start with dummy weights. Do not collect trajectories
++    # until the initial refit or generation preparation has completed.
++    collection_task = trajectory_collector.start_collection.remote(  # noqa: F841
++        dataloader
++    )
++    trajectory_collector.set_weight_version.remote(weight_version)
++    print("📦 Started continuous background trajectory collection")
++
+     print("✅ Policy generation setup complete, proceeding to validation...")
+ 
+     # Run validation at start if configured
+@@ -3580,6 +3630,8 @@ def async_grpo_train(
+         trajectory_collector.pause.remote()
+ 
+         try:
++            if mlperf_logger is not None:
++                mlperf_logger.start_eval(0)
+             val_metrics, validation_timings = validate(
+                 policy_generation,
+                 val_dataloader,
+@@ -3589,11 +3641,15 @@ def async_grpo_train(
+                 master_config=master_config,
+                 logger=logger,
+             )
++            if mlperf_logger is not None:
++                mlperf_logger.end_eval(0, val_metrics, validation_timings)
+             policy_generation.finish_generation()
+             logger.log_metrics(val_metrics, step, prefix="validation")
+             logger.log_metrics(validation_timings, step, prefix="timing/validation")
+             print("✅ Initial validation completed successfully")
+         except Exception as e:
++            if mlperf_logger is not None:
++                mlperf_logger.end_eval_with_error(0)
+             print(f"❌ Initial validation failed: {e}")
+             import traceback
+ 
+@@ -3603,6 +3659,17 @@ def async_grpo_train(
+             # Resume trajectory collection after initial validation
+             trajectory_collector.resume.remote()
+ 
++        if mlperf_logger is not None and mlperf_logger.target_reached:
++            try:
++                ray.kill(trajectory_collector)
++            except Exception as e:
++                print(f"Error stopping trajectory collector: {e}")
++            try:
++                ray.kill(replay_buffer)
++            except Exception as e:
++                print(f"Error stopping replay buffer: {e}")
++            return
++
+     print("✅ All setup complete, starting buffer wait...")
+     # Clear logger metrics at start of training
+     if policy_generation is not None:
+@@ -4021,20 +4088,34 @@ def async_grpo_train(
+                         POLICY_GENERATION_STALE = False
+                     else:
+                         policy_generation.prepare_for_generation()
+-                    val_metrics, validation_timings = validate(
+-                        policy_generation,
+-                        val_dataloader,
+-                        tokenizer,
+-                        val_task_to_env,
+-                        step=step + 1,
+-                        master_config=master_config,
+-                        logger=logger,
+-                    )
++                    validation_step = step + 1
++                    if mlperf_logger is not None:
++                        mlperf_logger.start_eval(validation_step)
++                    try:
++                        val_metrics, validation_timings = validate(
++                            policy_generation,
++                            val_dataloader,
++                            tokenizer,
++                            val_task_to_env,
++                            step=validation_step,
++                            master_config=master_config,
++                            logger=logger,
++                        )
++                    except Exception:
++                        if mlperf_logger is not None:
++                            mlperf_logger.end_eval_with_error(validation_step)
++                        raise
++                    if mlperf_logger is not None:
++                        mlperf_logger.end_eval(
++                            validation_step, val_metrics, validation_timings
++                        )
+                     policy_generation.finish_generation()
+                     logger.log_metrics(
+                         validation_timings, step + 1, prefix="timing/validation"
+                     )
+                     logger.log_metrics(val_metrics, step + 1, prefix="validation")
++                    if mlperf_logger is not None and mlperf_logger.target_reached:
++                        return
+ 
+                     # Explicit GPU memory cleanup after validation in async mode
+                     import gc
+@@ -4298,6 +4379,8 @@ def async_grpo_train(
+ 
+             logger.log_metrics(performance_metrics, step + 1, prefix="performance")
+             logger.log_metrics(metrics, step + 1, prefix="train")
++            if mlperf_logger is not None:
++                mlperf_logger.observe_metrics(metrics, step + 1, prefix="train")
+             # step_finished=True here since this is the final log of our current step.
+             logger.log_metrics(
+                 timing_metrics,
+@@ -4305,6 +4388,13 @@ def async_grpo_train(
+                 prefix="timing/train",
+                 step_finished=True,
+             )
++            if mlperf_logger is not None:
++                mlperf_logger.observe_metrics(
++                    timing_metrics,
++                    step + 1,
++                    prefix="timing/train",
++                    step_finished=True,
++                )
+ 
+             timer.reset()
+             step += 1
+@@ -4325,6 +4415,9 @@ def async_grpo_train(
+         traceback.print_exc()
+ 
+     finally:
++        if mlperf_logger is not None:
++            mlperf_logger.finalize()
++
+         # Clean up
+         print("🛑 Stopping trajectory collection...")
+         try:
