@@ -17,19 +17,20 @@ The artifact inspected for this snapshot is:
 
 | Field | Value |
 | --- | --- |
-| Source revision used for the image layer | `a301b30d513598f510d62c2b5defe23fcf6768ba` |
+| Source revision used for the image layer | `aab88a31d3f6a060daed353b40d60b5b1f32ee41` |
 | Dockerfile | `docker/Dockerfile.gym_nightly_qwen35_main` |
 | Platform | `linux/arm64` |
-| AWS squashfs | `/lustre/fsw/portfolios/coreai/projects/coreai_mlperf_training/containers/dl+mlperf+optimized+nemo-rl-nightly-qwen35-ea7c4f9-a301b30d5.sqsh` |
-| Squashfs size | `65,470,586,880` bytes |
-| Squashfs SHA-256 | `6489f6374d40e2b7f76dcb0ceda41fe3bc2a6b3916121b4899c3102e101b3cb1` |
+| Registry tag | `gitlab-master.nvidia.com/dl/mlperf/optimized:nemo-rl-nightly-qwen35-ea7c4f9-aab88a31d` |
+| Build result image ID | `sha256:4f6dff17e32fd6029de7517a76600a1496ae613e5055ef51278e1204af50b1df` |
+| AWS squashfs | `/lustre/fsw/portfolios/coreai/projects/coreai_mlperf_training/containers/dl+mlperf+optimized+nemo-rl-nightly-qwen35-ea7c4f9-aab88a31d.sqsh` |
+| Squashfs size | `65,513,212,019` bytes |
+| Squashfs SHA-256 | `4483b5751bb398034c7fdbbf0d02a8493ac7686d8992f981f2e0bb842f22766b` |
 
-This squashfs is a cluster-local saved artifact. A matching
-`nemo-rl-nightly-qwen35-ea7c4f9-a301b30d5` tag was not present in the GitLab
-registry when checked on 2026-07-05. It is therefore useful for development but
-is **not release-grade provenance**. Before an audited run, rebuild the stable
-recipe, push it, record its registry digest, and import that exact digest into a
-new squashfs.
+This candidate was built from the Dockerfile on a Blackwell ARM node, pushed to
+the GitLab registry, and freshly imported with Enroot on AWS. The squashfs
+superblock and a launcher-equivalent import/config probe passed on 2026-07-06.
+The registry tag is mutable; capture its immutable manifest digest before using
+this artifact for a final audited submission.
 
 ## Pinned Upstream Baseline
 
@@ -442,10 +443,9 @@ base. Both are pinned to the same revisions used by the branch lock file. The
 patch rejects MLPerf logging for synchronous GRPO rather than silently emitting
 an incomplete event stream.
 
-The audited-image hashes above remain the identity of `a301b30d5`. Candidate
-working-tree files must receive new hashes only after they are committed and a
-new image is built. The deleted D4 helper and patch remain listed above solely
-because they are present in that historical squashfs.
+The audited-image hashes above identify the `aab88a31d` candidate containing
+Candidate D13. The deleted D4 helper and patch remain listed above solely to
+describe historical artifacts where they were present.
 
 ### Reviewed Engineer Fixes Not Carried
 
