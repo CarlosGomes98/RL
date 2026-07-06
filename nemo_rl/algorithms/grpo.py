@@ -2349,9 +2349,7 @@ def grpo_train(
 
             logger.log_metrics(metrics, total_steps + 1, prefix="train")
             if mlperf_logger is not None:
-                mlperf_logger.observe_metrics(
-                    metrics, total_steps + 1, prefix="train"
-                )
+                mlperf_logger.observe_metrics(metrics, total_steps + 1, prefix="train")
             logger.log_metrics(
                 performance_metrics, total_steps + 1, prefix="performance"
             )
@@ -2776,14 +2774,6 @@ def async_grpo_train(
         start_step=step,
     )
 
-    # Start trajectory collection in background
-    collection_task = trajectory_collector.start_collection.remote(dataloader)
-
-    # Ensure collector knows initial weight version
-    trajectory_collector.set_weight_version.remote(weight_version)
-
-    print("📦 Started continuous background trajectory collection")
-
     print(
         f"🚀 Starting async GRPO training with buffer_size={optimal_buffer_size}, max_age={max_trajectory_age_steps} steps"
     )
@@ -2816,6 +2806,14 @@ def async_grpo_train(
             if mlperf_logger is not None:
                 mlperf_logger.finalize()
             return
+
+    # The generation engines start with dummy weights, so collection must not
+    # begin until the initial refit or generation preparation has completed.
+    collection_task = trajectory_collector.start_collection.remote(  # noqa: F841
+        dataloader
+    )
+    trajectory_collector.set_weight_version.remote(weight_version)
+    print("📦 Started continuous background trajectory collection")
 
     print("✅ Policy generation setup complete, proceeding to validation...")
 

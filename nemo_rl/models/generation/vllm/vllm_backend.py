@@ -51,210 +51,6 @@ def fix_gpt_oss_export_transpose(key: str, weight: torch.Tensor) -> torch.Tensor
     return weight
 
 
-def _weight_debug_summary(key: str, weight: torch.Tensor) -> str:
-    return (
-        f"name={key!r}, shape={tuple(weight.shape)}, dtype={weight.dtype}, "
-        f"device={weight.device}, stride={weight.stride()}"
-    )
-
-
-def _qwen35_moe_export_spec(key: str) -> tuple[int, str] | None:
-    for prefix in (
-        "model.language_model.model.",
-        "model.language_model.",
-        "language_model.model.",
-        "language_model.",
-    ):
-        if key.startswith(prefix):
-            key = key.removeprefix(prefix)
-            break
-
-    parts = key.split(".")
-    if (
-        len(parts) not in (5, 6)
-        or parts[0] != "layers"
-        or parts[2] != "mlp"
-        or parts[3] != "experts"
-    ):
-        return None
-    if len(parts) == 6 and parts[5] != "weight":
-        return None
-
-    kind = parts[4]
-    if kind not in {"gate_up_proj", "down_proj"}:
-        return None
-
-    try:
-        layer_idx = int(parts[1])
-    except ValueError:
-        return None
-    return layer_idx, kind
-
-
-def _split_qwen35_moe_weights(
-    policy_weights: list[tuple[str, torch.Tensor]], model_runner
-) -> tuple[list[tuple[str, torch.Tensor]], list[tuple[str, torch.Tensor, int, str]]]:
-    model = model_runner.model
-    if not getattr(model, "is_3d_moe_weight", False):
-        return policy_weights, []
-
-    normal_weights = []
-    moe_weights = []
-    for key, weight in policy_weights:
-        spec = _qwen35_moe_export_spec(key)
-        if spec is not None and weight.ndim == 3:
-            layer_idx, kind = spec
-            moe_weights.append((key, weight, layer_idx, kind))
-        else:
-            normal_weights.append((key, weight))
-    return normal_weights, moe_weights
-
-
-def _get_qwen35_inner_model(model_runner):
-    language_model = getattr(model_runner.model, "language_model", None)
-    inner_model = getattr(language_model, "model", None) if language_model else None
-    if inner_model is None:
-        inner_model = getattr(model_runner.model, "model", None)
-    return inner_model
-
-
-def _get_fused_moe_param(experts, name: str) -> torch.nn.Parameter | None:
-    for owner in (experts, getattr(experts, "base_layer", None)):
-        if owner is None:
-            continue
-        param = getattr(owner, name, None)
-        if param is not None:
-            return param
-    return None
-
-
-def _copy_qwen35_expert_tensor(
-    param: torch.nn.Parameter,
-    local_expert_id: int,
-    weight: torch.Tensor,
-    key: str,
-) -> None:
-    if local_expert_id < 0 or local_expert_id >= param.data.shape[0]:
-        raise RuntimeError(
-            f"Qwen35 MoE refit local expert id {local_expert_id} is outside "
-            f"parameter shape {tuple(param.data.shape)} for {_weight_debug_summary(key, weight)}"
-        )
-
-    dest = param.data[local_expert_id]
-    if dest.ndim == 3 and weight.ndim == 2:
-        if (
-            dest.shape[1] == weight.shape[0]
-            and dest.shape[0] * dest.shape[2] == weight.shape[1]
-        ):
-            weight = (
-                weight.view(weight.shape[0], dest.shape[0], dest.shape[2])
-                .permute(1, 0, 2)
-                .contiguous()
-            )
-        elif (
-            dest.shape[1] == weight.shape[1]
-            and dest.shape[0] * dest.shape[2] == weight.shape[0]
-        ):
-            weight = (
-                weight.view(dest.shape[0], dest.shape[2], weight.shape[1])
-                .permute(0, 2, 1)
-                .contiguous()
-            )
-
-    if dest.ndim != weight.ndim:
-        raise RuntimeError(
-            "Qwen35 MoE refit tensor rank mismatch: "
-            f"destination shape={tuple(dest.shape)}, {_weight_debug_summary(key, weight)}"
-        )
-
-    slices = []
-    for dim, (dest_size, weight_size) in enumerate(zip(dest.shape, weight.shape)):
-        if weight_size > dest_size:
-            raise RuntimeError(
-                "Qwen35 MoE refit tensor shape mismatch: "
-                f"destination shape={tuple(dest.shape)}, {_weight_debug_summary(key, weight)}, "
-                f"dim={dim}"
-            )
-        slices.append(slice(0, weight_size))
-
-    dest = dest[tuple(slices)]
-    src = weight.to(device=dest.device, dtype=dest.dtype)
-    dest.copy_(src)
-
-
-def _load_qwen35_moe_weights_direct(
-    moe_weights: list[tuple[str, torch.Tensor, int, str]], model_runner
-) -> None:
-    if not moe_weights:
-        return
-
-    inner_model = _get_qwen35_inner_model(model_runner)
-    layers = getattr(inner_model, "layers", None) if inner_model is not None else None
-    if layers is None:
-        key, weight, _, _ = moe_weights[0]
-        raise RuntimeError(
-            "Qwen35 MoE refit found exported expert weights but could not find "
-            f"vLLM language_model.model.layers; {_weight_debug_summary(key, weight)}"
-        )
-
-    copied = 0
-    with torch.no_grad():
-        for key, weight, layer_idx, kind in moe_weights:
-            try:
-                layer = layers[layer_idx]
-            except (IndexError, TypeError) as exc:
-                raise RuntimeError(
-                    f"Qwen35 MoE refit could not find vLLM layer {layer_idx}; "
-                    f"{_weight_debug_summary(key, weight)}"
-                ) from exc
-
-            mlp = getattr(layer, "mlp", None)
-            experts = getattr(mlp, "experts", None) if mlp is not None else None
-            if experts is None:
-                raise RuntimeError(
-                    f"Qwen35 MoE refit could not find fused experts for layer {layer_idx}; "
-                    f"{_weight_debug_summary(key, weight)}"
-                )
-
-            param_name = "w13_weight" if kind == "gate_up_proj" else "w2_weight"
-            param = _get_fused_moe_param(experts, param_name)
-            if param is None:
-                raise RuntimeError(
-                    f"Qwen35 MoE refit could not find fused experts.{param_name} "
-                    f"for layer {layer_idx}; {_weight_debug_summary(key, weight)}"
-                )
-
-            mapper = getattr(experts, "_map_global_expert_id_to_local_expert_id", None)
-            local_copied = 0
-            for global_expert_id in range(weight.shape[0]):
-                local_expert_id = (
-                    mapper(global_expert_id) if mapper is not None else global_expert_id
-                )
-                if local_expert_id == -1:
-                    continue
-                _copy_qwen35_expert_tensor(
-                    param, local_expert_id, weight[global_expert_id], key
-                )
-                local_copied += 1
-
-            copied += local_copied
-
-    if copied == 0:
-        key, weight, _, _ = moe_weights[0]
-        raise RuntimeError(
-            "Qwen35 MoE refit found exported expert weights but did not copy any "
-            f"local expert tensors; {_weight_debug_summary(key, weight)}"
-        )
-
-    first_key, first_weight, _, _ = moe_weights[0]
-    print(
-        "[qwen35_moe_refit] copied "
-        f"{copied} local expert tensors from {len(moe_weights)} exported tensors; "
-        f"first={_weight_debug_summary(first_key, first_weight)}",
-        flush=True,
-    )
-
-
 class VllmInternalWorkerExtension:
     def init_collective(
         self,
@@ -379,35 +175,23 @@ class VllmInternalWorkerExtension:
         draft_model.load_weights(weights=draft_weights)
 
     @staticmethod
-    def _load_policy_weights_with_diagnostics(
-        policy_weights: list[tuple[str, torch.Tensor]], model_runner
+    def _load_policy_weights(
+        policy_weights: list[tuple[str, torch.Tensor]], model_runner: Any
     ) -> None:
-        normal_weights, moe_weights = _split_qwen35_moe_weights(
-            policy_weights, model_runner
-        )
-
-        def load_with_diagnostics(target, weights, target_name):
-            if not weights:
-                return
-            try:
-                target.load_weights(weights=weights)
-                return
-            except Exception as original_exc:
-                for key, weight in weights:
-                    try:
-                        target.load_weights(weights=[(key, weight)])
-                    except Exception as single_exc:
-                        raise RuntimeError(
-                            "vLLM load_weights failed for exported policy tensor "
-                            f"target={target_name}, "
-                            f"{_weight_debug_summary(key, weight)}; "
-                            f"single_tensor_error={single_exc!r}; "
-                            f"chunk_error={original_exc!r}"
-                        ) from original_exc
-                raise
-
-        load_with_diagnostics(model_runner.model, normal_weights, "top_level")
-        _load_qwen35_moe_weights_direct(moe_weights, model_runner)
+        """Load policy weights through vLLM and identify any rejected tensor."""
+        try:
+            model_runner.model.load_weights(weights=policy_weights)
+        except Exception as batch_error:
+            for name, tensor in policy_weights:
+                try:
+                    model_runner.model.load_weights(weights=[(name, tensor)])
+                except Exception as tensor_error:
+                    raise RuntimeError(
+                        "vLLM rejected a refit tensor: "
+                        f"name={name!r}, shape={tuple(tensor.shape)}, "
+                        f"dtype={tensor.dtype}, error={tensor_error!r}"
+                    ) from batch_error
+            raise
 
     @wrap_with_nvtx_name("vllm_internal_worker_extension/update_weights_via_ipc_zmq")
     def update_weights_via_ipc_zmq(self) -> bool:
@@ -483,9 +267,7 @@ class VllmInternalWorkerExtension:
                     # the fp8 load_weights additionally casts bf16 weights into fp8
                     fp8.load_weights(policy_weights, self.model_runner)
                 else:
-                    self._load_policy_weights_with_diagnostics(
-                        policy_weights, self.model_runner
-                    )
+                    self._load_policy_weights(policy_weights, self.model_runner)
 
                 self._load_draft_weights(draft_weights)
 
@@ -556,9 +338,7 @@ class VllmInternalWorkerExtension:
                 # the fp8 load_weights additionally casts bf16 weights into fp8
                 fp8.load_weights(policy_weights, model_runner)
             else:
-                self._load_policy_weights_with_diagnostics(
-                    policy_weights, model_runner
-                )
+                self._load_policy_weights(policy_weights, model_runner)
 
             self._load_draft_weights(draft_weights)
 
@@ -578,7 +358,7 @@ class VllmInternalWorkerExtension:
         except Exception as e:
             print(
                 "Error in VllmInternalWorkerExtension.update_weights_from_collective: "
-                f"{e}\n{traceback.format_exc()}"
+                f"{e}.\n{traceback.format_exc()}"
             )
             return False
 

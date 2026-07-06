@@ -29,6 +29,7 @@ import uvicorn
 from fastapi import FastAPI
 
 from nemo_rl.distributed.batched_data_dict import BatchedDataDict
+
 try:
     from nemo_rl.distributed.virtual_cluster import (
         DEFAULT_PORT_RANGE_HIGH,
@@ -65,6 +66,8 @@ except ImportError:
 
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             return _bind_socket_in_range(sock, port_range_low, port_range_high)
+
+
 from nemo_rl.distributed.worker_group_utils import get_nsight_config_if_pattern_matches
 from nemo_rl.models.generation.interfaces import (
     GenerationDatumSpec,
@@ -178,13 +181,17 @@ def _last_token_index(token_ids: list[int], token_id: int) -> Optional[int]:
     return None
 
 
-def _token_window_at_end(token_ids: list[int], window: int) -> tuple[int, int, list[int]]:
+def _token_window_at_end(
+    token_ids: list[int], window: int
+) -> tuple[int, int, list[int]]:
     end = len(token_ids)
     start = max(0, end - window)
     return start, end, token_ids[start:end]
 
 
-def _token_window(token_ids: list[int], center_idx: int, window: int) -> tuple[int, int, list[int]]:
+def _token_window(
+    token_ids: list[int], center_idx: int, window: int
+) -> tuple[int, int, list[int]]:
     start = max(0, center_idx - window)
     end = min(len(token_ids), center_idx + window + 1)
     return start, end, token_ids[start:end]
@@ -414,8 +421,7 @@ def _qwen35_replace_prefix_from_suffix_messages(
         )
 
     return (
-        model_prefix_token_ids[:model_cut_end]
-        + template_token_ids[template_cut_start:]
+        model_prefix_token_ids[:model_cut_end] + template_token_ids[template_cut_start:]
     )
 
 
@@ -500,9 +506,7 @@ def _replace_prefix_tokens(
             return repaired_token_ids
 
     # Assert here to prepare for the logic below
-    if len(template_token_ids) <= len(
-        template_prefix_token_ids
-    ):
+    if len(template_token_ids) <= len(template_prefix_token_ids):
         repaired_token_ids = _qwen35_replace_prefix_from_suffix_messages(
             eos_token_id=eos_token_id,
             model_prefix_token_ids=model_prefix_token_ids,
@@ -541,9 +545,7 @@ Template repr (detokenized): {repr(tokenizer.decode(template_token_ids))}
             break
 
     # This should never be the case, but
-    if (
-        template_cut_start < 0
-    ):
+    if template_cut_start < 0:
         _log_qwen35_prefix_diagnostic(
             tokenizer=tokenizer,
             reason="template_prefix_has_no_eos",
@@ -654,7 +656,9 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
 
         self._reserved_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._reserved_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self._reserved_port = _bind_socket_in_range(self._reserved_socket, port_range_low, port_range_high)
+        self._reserved_port = _bind_socket_in_range(
+            self._reserved_socket, port_range_low, port_range_high
+        )
         self._reserved_socket.listen(128)
         self._reserved_socket.setblocking(False)
         self._reserved_node_ip = _get_node_ip_local()
@@ -695,7 +699,14 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
             t0 = time.perf_counter()
             try:
                 result = subprocess.run(
-                    ["rsync", "-a", "--ignore-existing", "--prune-empty-dirs", f"{seed_dir}/", f"{local_dst}/"],
+                    [
+                        "rsync",
+                        "-a",
+                        "--ignore-existing",
+                        "--prune-empty-dirs",
+                        f"{seed_dir}/",
+                        f"{local_dst}/",
+                    ],
                     capture_output=True,
                     timeout=timeout,
                 )
@@ -710,7 +721,10 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
 
             elapsed = time.perf_counter() - t0
             if result.returncode == 0:
-                print(f"[CACHE SEED] vLLM compile cache seeded in {elapsed:.1f}s", flush=True)
+                print(
+                    f"[CACHE SEED] vLLM compile cache seeded in {elapsed:.1f}s",
+                    flush=True,
+                )
                 return
 
             stderr = result.stderr.decode(errors="replace")[:200]
@@ -720,7 +734,9 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
                 flush=True,
             )
 
-        print("[CACHE SEED] all attempts failed, proceeding with cold compile", flush=True)
+        print(
+            "[CACHE SEED] all attempts failed, proceeding with cold compile", flush=True
+        )
 
     def load_model(self):
         """Load the vLLM model and create the engine.
@@ -754,6 +770,7 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
         self.llm = AsyncLLM.from_engine_args(
             self.llm_async_engine_args, stat_loggers=self.stat_loggers
         )
+        self._install_engine_input_socket_lock()
 
         if self.cfg["vllm_cfg"].get("expose_http_server"):
             self.server_thread, self.base_url, self.http_server = (
@@ -765,6 +782,28 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
         self._vllm_metrics_lock = threading.Lock()
         if self.cfg["vllm_cfg"].get("enable_vllm_metrics_logger", False):
             self._start_vllm_metrics_logger()
+
+    def _install_engine_input_socket_lock(self) -> None:
+        """Serialize concurrent sends through vLLM's engine input socket."""
+        try:
+            shadow_socket = self.llm.engine_core.input_socket._shadow_sock
+        except AttributeError:
+            warnings.warn(
+                "Could not locate vLLM engine_core.input_socket._shadow_sock; "
+                "in-flight weight updates remain susceptible to concurrent ZeroMQ "
+                "multipart sends.",
+                stacklevel=2,
+            )
+            return
+
+        lock = threading.Lock()
+        original_send_multipart = shadow_socket.send_multipart
+
+        def locked_send_multipart(*args: Any, **kwargs: Any) -> Any:
+            with lock:
+                return original_send_multipart(*args, **kwargs)
+
+        shadow_socket.send_multipart = locked_send_multipart  # type: ignore[assignment]
 
     def _start_vllm_metrics_logger(self) -> None:
         """Start a background thread that periodically collects vLLM logger metrics.
@@ -1161,9 +1200,12 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
         )
 
         # Load custom reasoning parser plugin if specified
-        reasoning_parser_plugin = serving_chat_kwargs.pop("reasoning_parser_plugin", None)
+        reasoning_parser_plugin = serving_chat_kwargs.pop(
+            "reasoning_parser_plugin", None
+        )
         if reasoning_parser_plugin:
             from vllm.reasoning.abs_reasoning_parsers import ReasoningParserManager
+
             ReasoningParserManager.import_reasoning_parser(reasoning_parser_plugin)
 
         openai_serving_chat = NeMoRLOpenAIServingChat(**serving_chat_kwargs)
@@ -1317,7 +1359,9 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
 
         from logging import getLogger as _getLogger
 
-        _getLogger("vllm.entrypoints.openai.engine.protocol").addFilter(CleanLoggingFilter())
+        _getLogger("vllm.entrypoints.openai.engine.protocol").addFilter(
+            CleanLoggingFilter()
+        )
 
         # Suppress the noisy vLLM traceback when a prompt exceeds max_model_len.
         # This is expected during multi-turn rollouts; we log a clean one-line

@@ -16,6 +16,11 @@ import os
 from importlib.util import find_spec
 
 
+_TE_DPA_UTILS_PATH = "pytorch/attention/dot_product_attention/utils.py"
+_TE_FA2_ARCH_ALLOWLIST = "((8, 0), (9, 0), (10, 0), (12, 0))"
+_TE_FA2_ARCH_ALLOWLIST_SM103 = "((8, 0), (9, 0), (10, 0), (10, 3), (12, 0))"
+
+
 def _get_transformer_engine_file(relative_path: str) -> str:
     """Return absolute path to a Transformer Engine file or raise if it cannot be found.
 
@@ -104,3 +109,43 @@ def apply_transformer_engine_patch():
 
     except Exception as e:
         print(f"Error checking/patching transformer_engine: {e}")
+
+
+def apply_transformer_engine_sm103_flash_attention_patch() -> None:
+    """Allow FlashAttention-2 with a 256-wide head on GB300 in TE 2.15."""
+    import fcntl
+
+    dpa_utils_file = _get_transformer_engine_file(_TE_DPA_UTILS_PATH)
+    with open(dpa_utils_file, "r+") as file:
+        fcntl.flock(file, fcntl.LOCK_EX)
+        content = file.read()
+
+        if _TE_FA2_ARCH_ALLOWLIST_SM103 not in content:
+            occurrence_count = content.count(_TE_FA2_ARCH_ALLOWLIST)
+            if occurrence_count != 1:
+                raise RuntimeError(
+                    "Could not identify TransformerEngine's pinned FlashAttention-2 "
+                    "architecture allowlist exactly once; refusing a fuzzy sm10.3 "
+                    f"patch. Found {occurrence_count} matches in {dpa_utils_file}."
+                )
+
+            content = content.replace(
+                _TE_FA2_ARCH_ALLOWLIST,
+                _TE_FA2_ARCH_ALLOWLIST_SM103,
+                1,
+            )
+            file.seek(0)
+            file.write(content)
+            file.truncate()
+            file.flush()
+            print(
+                "Enabled TransformerEngine FlashAttention-2 on sm10.3: "
+                f"{dpa_utils_file}"
+            )
+
+    import importlib
+    import sys
+
+    module_name = "transformer_engine.pytorch.attention.dot_product_attention.utils"
+    if module_name in sys.modules:
+        importlib.reload(sys.modules[module_name])

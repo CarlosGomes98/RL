@@ -26,13 +26,25 @@ WORKDIR /opt/nemo-rl
 COPY qwen_35/ /opt/nemo-rl/qwen_35/
 COPY examples/nemo_gym/launch_qwen35_nemo_gym_multinode_training.sh \
     /opt/nemo-rl/examples/nemo_gym/launch_qwen35_nemo_gym_multinode_training.sh
+# Keep the source override surface explicit. These files contain the Qwen async
+# initialization, refit, distributed-timeout, and vLLM transport fixes carried
+# by this branch; dependencies and all other NeMo-RL modules remain from nightly.
+COPY nemo_rl/algorithms/grpo.py /opt/nemo-rl/nemo_rl/algorithms/grpo.py
+COPY nemo_rl/models/generation/vllm/vllm_backend.py \
+    /opt/nemo-rl/nemo_rl/models/generation/vllm/vllm_backend.py
+COPY nemo_rl/models/generation/vllm/vllm_worker_async.py \
+    /opt/nemo-rl/nemo_rl/models/generation/vllm/vllm_worker_async.py
+COPY nemo_rl/models/megatron/setup.py \
+    /opt/nemo-rl/nemo_rl/models/megatron/setup.py
+COPY nemo_rl/models/policy/workers/megatron_policy_worker.py \
+    /opt/nemo-rl/nemo_rl/models/policy/workers/megatron_policy_worker.py
+COPY nemo_rl/models/policy/workers/patches.py \
+    /opt/nemo-rl/nemo_rl/models/policy/workers/patches.py
 COPY docker/gym/qwen35-gym-vllm-model.patch /tmp/qwen35-gym-vllm-model.patch
 COPY docker/gym/nightly-swe-agent-apptainer-logs.patch \
     /tmp/nightly-swe-agent-apptainer-logs.patch
-COPY docker/gym/qwen35-nightly-moe-refit.py \
-    /opt/nemo-rl/nemo_rl/models/generation/vllm/qwen35_moe_refit.py
-COPY docker/gym/nightly-qwen35-moe-refit.patch \
-    /tmp/nightly-qwen35-moe-refit.patch
+COPY docker/gym/nightly-gym-bounded-transient-retries.patch \
+    /tmp/nightly-gym-bounded-transient-retries.patch
 COPY docker/gym/qwen35-nightly-nemo-gym.patch \
     /tmp/qwen35-nightly-nemo-gym.patch
 COPY docker/gym/nightly-qwen35-multiturn-prefix.patch \
@@ -46,7 +58,8 @@ RUN <<"EOF" bash -exu
 cd /opt/nemo-rl/3rdparty/Gym-workspace/Gym
 for patch in \
     /tmp/qwen35-gym-vllm-model.patch \
-    /tmp/nightly-swe-agent-apptainer-logs.patch; do
+    /tmp/nightly-swe-agent-apptainer-logs.patch \
+    /tmp/nightly-gym-bounded-transient-retries.patch; do
     if git apply --check "${patch}"; then
         git apply "${patch}"
     elif git apply --reverse --check "${patch}"; then
@@ -60,7 +73,9 @@ grep -F 'logs_dir.mkdir(parents=True, exist_ok=True)' \
     responses_api_agents/swe_agents/app.py
 grep -F 'NEMO_GYM_SWE_WORKSPACE_ROOT' \
     responses_api_agents/swe_agents/app.py
+grep -F 'NEMO_GYM_TRANSIENT_RETRY_SECONDS' nemo_gym/server_utils.py
 python -m py_compile \
+    nemo_gym/server_utils.py \
     responses_api_agents/swe_agents/app.py \
     responses_api_models/vllm_model/app.py
 EOF
@@ -83,99 +98,27 @@ else
     git apply --check /tmp/nightly-qwen35-multiturn-prefix.patch
 fi
 
-if git apply --check /tmp/nightly-qwen35-moe-refit.patch; then
-    git apply /tmp/nightly-qwen35-moe-refit.patch
-elif git apply --reverse --check /tmp/nightly-qwen35-moe-refit.patch; then
-    echo "nightly-qwen35-moe-refit.patch is already present in the nightly"
-else
-    git apply --check /tmp/nightly-qwen35-moe-refit.patch
-fi
-
-grep -F 'qwen35_moe_refit import load_policy_weights' \
-    nemo_rl/models/generation/vllm/vllm_backend.py
 grep -F 'Treating this rollout as a masked zero-reward trajectory' \
     nemo_rl/environments/nemo_gym.py
 grep -F '_qwen35_replace_prefix_from_suffix_messages' \
     nemo_rl/models/generation/vllm/vllm_worker_async.py
+grep -F 'NRL_REFIT_SPLIT_FUSED_EXPERTS' \
+    nemo_rl/models/policy/workers/megatron_policy_worker.py
+grep -F 'NRL_NCCL_TIMEOUT_MINUTES' \
+    nemo_rl/models/megatron/setup.py
+grep -F 'apply_transformer_engine_sm103_flash_attention_patch' \
+    nemo_rl/models/policy/workers/patches.py
+grep -F 'collection must not' nemo_rl/algorithms/grpo.py
 python -m py_compile \
+    nemo_rl/algorithms/grpo.py \
     nemo_rl/environments/nemo_gym.py \
-    nemo_rl/models/generation/vllm/qwen35_moe_refit.py \
     nemo_rl/models/generation/vllm/vllm_backend.py \
-    nemo_rl/models/generation/vllm/vllm_worker_async.py
+    nemo_rl/models/generation/vllm/vllm_worker_async.py \
+    nemo_rl/models/megatron/setup.py \
+    nemo_rl/models/policy/workers/megatron_policy_worker.py \
+    nemo_rl/models/policy/workers/patches.py
 python - <<'PY'
-from types import SimpleNamespace
-
-import torch
-
 from nemo_rl.models.generation.vllm.vllm_worker_async import _replace_prefix_tokens
-from nemo_rl.models.generation.vllm.qwen35_moe_refit import (
-    _copy_expert_tensor,
-    _load_qwen35_moe_weights,
-    _qwen35_moe_export_spec,
-)
-
-assert _qwen35_moe_export_spec(
-    "model.language_model.model.layers.3.mlp.experts.gate_up_proj"
-) == (3, "gate_up_proj")
-
-source = torch.arange(24, dtype=torch.float32).view(3, 8)
-destination = torch.nn.Parameter(torch.zeros(1, 2, 3, 4))
-_copy_expert_tensor(destination, 0, source, "gate_up_proj")
-expected = source.view(3, 2, 4).permute(1, 0, 2)
-torch.testing.assert_close(destination[0], expected)
-
-source = torch.arange(24, dtype=torch.float32).view(8, 3)
-destination = torch.nn.Parameter(torch.zeros(1, 2, 3, 4))
-_copy_expert_tensor(destination, 0, source, "down_proj")
-expected = source.view(2, 4, 3).permute(0, 2, 1)
-torch.testing.assert_close(destination[0], expected)
-
-
-class _Experts:
-    def __init__(self):
-        self.w13_weight = torch.nn.Parameter(torch.zeros(1, 2, 2))
-
-    @staticmethod
-    def _map_global_expert_id_to_local_expert_id(global_expert_id):
-        return global_expert_id
-
-
-pp_weights = [
-    (
-        "layers.0.mlp.experts.gate_up_proj",
-        torch.full((1, 2, 2), 3.0),
-        0,
-        "gate_up_proj",
-    ),
-    (
-        "layers.1.mlp.experts.gate_up_proj",
-        torch.full((1, 2, 2), 7.0),
-        1,
-        "gate_up_proj",
-    ),
-]
-for local_idx, expected_value in ((0, 3.0), (1, 7.0)):
-    layers = [object(), object()]
-    local_layer = SimpleNamespace(mlp=SimpleNamespace(experts=_Experts()))
-    layers[local_idx] = local_layer
-    inner_model = SimpleNamespace(
-        layers=layers,
-        start_layer=local_idx,
-        end_layer=local_idx + 1,
-    )
-    model_runner = SimpleNamespace(
-        model=SimpleNamespace(language_model=SimpleNamespace(model=inner_model))
-    )
-    _load_qwen35_moe_weights([pp_weights[1 - local_idx]], model_runner)
-    torch.testing.assert_close(
-        local_layer.mlp.experts.w13_weight,
-        torch.zeros(1, 2, 2),
-    )
-    _load_qwen35_moe_weights(pp_weights, model_runner)
-    torch.testing.assert_close(
-        local_layer.mlp.experts.w13_weight,
-        torch.full((1, 2, 2), expected_value),
-    )
 
 
 class _Tokenizer:

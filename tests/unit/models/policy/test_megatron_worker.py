@@ -34,10 +34,44 @@ from nemo_rl.distributed.virtual_cluster import RayVirtualCluster
 from nemo_rl.models.generation import configure_generation_config
 from nemo_rl.models.policy import PolicyConfig
 from nemo_rl.models.policy.lm_policy import Policy
+from nemo_rl.models.policy.workers.megatron_policy_worker import (
+    _split_fused_expert_weight_for_vllm,
+)
 from nemo_rl.utils.checkpoint import CheckpointManager
 from tests.unit.test_utils import SimpleLossFn
 
 pytestmark = pytest.mark.mcore
+
+
+def test_split_fused_expert_weight_for_vllm() -> None:
+    gate_up = torch.arange(24).reshape(2, 6, 2)
+    down = torch.arange(16).reshape(2, 2, 4)
+
+    gate_up_weights = list(
+        _split_fused_expert_weight_for_vllm(
+            "model.layers.3.mlp.experts.gate_up_proj", gate_up
+        )
+    )
+    down_weights = list(
+        _split_fused_expert_weight_for_vllm(
+            "model.layers.3.mlp.experts.down_proj", down
+        )
+    )
+
+    assert [name for name, _ in gate_up_weights] == [
+        "model.layers.3.mlp.experts.0.gate_proj.weight",
+        "model.layers.3.mlp.experts.0.up_proj.weight",
+        "model.layers.3.mlp.experts.1.gate_proj.weight",
+        "model.layers.3.mlp.experts.1.up_proj.weight",
+    ]
+    torch.testing.assert_close(gate_up_weights[0][1], gate_up[0, :3])
+    torch.testing.assert_close(gate_up_weights[1][1], gate_up[0, 3:])
+    assert [name for name, _ in down_weights] == [
+        "model.layers.3.mlp.experts.0.down_proj.weight",
+        "model.layers.3.mlp.experts.1.down_proj.weight",
+    ]
+    torch.testing.assert_close(down_weights[1][1], down[1])
+
 
 basic_pg_loss_test_config: ClippedPGLossConfig = {
     "ratio_clip_min": 0.2,

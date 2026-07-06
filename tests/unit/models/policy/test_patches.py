@@ -22,6 +22,7 @@ import pytest
 from nemo_rl.models.policy.workers.patches import (
     _get_transformer_engine_file,
     apply_transformer_engine_patch,
+    apply_transformer_engine_sm103_flash_attention_patch,
 )
 
 
@@ -445,3 +446,62 @@ def permutation_kernel(x):
                 assert captured.out.count("Successfully patched") == 1
         finally:
             os.unlink(tmp_path)
+
+
+class TestApplyTransformerEngineSm103FlashAttentionPatch:
+    """Tests for the opt-in TE 2.15 GB300 architecture-gate patch."""
+
+    UNPATCHED_CONTENT = """
+if head_dim_qk > 192 and device_compute_capability not in ((8, 0), (9, 0), (10, 0), (12, 0)):
+    use_flash_attention_2 = False
+"""
+    PATCHED_CONTENT = """
+if head_dim_qk > 192 and device_compute_capability not in ((8, 0), (9, 0), (10, 0), (10, 3), (12, 0)):
+    use_flash_attention_2 = False
+"""
+
+    def test_patch_applies_and_is_idempotent(self, tmp_path):
+        dpa_utils_path = tmp_path / "utils.py"
+        dpa_utils_path.write_text(self.UNPATCHED_CONTENT)
+
+        with patch(
+            "nemo_rl.models.policy.workers.patches._get_transformer_engine_file",
+            return_value=str(dpa_utils_path),
+        ):
+            apply_transformer_engine_sm103_flash_attention_patch()
+            first_result = dpa_utils_path.read_text()
+            apply_transformer_engine_sm103_flash_attention_patch()
+
+        assert first_result == self.PATCHED_CONTENT
+        assert dpa_utils_path.read_text() == first_result
+
+    def test_patch_rejects_unknown_source(self, tmp_path):
+        dpa_utils_path = tmp_path / "utils.py"
+        dpa_utils_path.write_text("different TransformerEngine source\n")
+
+        with (
+            patch(
+                "nemo_rl.models.policy.workers.patches._get_transformer_engine_file",
+                return_value=str(dpa_utils_path),
+            ),
+            pytest.raises(RuntimeError, match="refusing a fuzzy sm10.3 patch"),
+        ):
+            apply_transformer_engine_sm103_flash_attention_patch()
+
+    def test_patch_reloads_an_imported_utils_module(self, tmp_path):
+        module_name = "transformer_engine.pytorch.attention.dot_product_attention.utils"
+        dpa_utils_path = tmp_path / "utils.py"
+        dpa_utils_path.write_text(self.PATCHED_CONTENT)
+        fake_module = MagicMock()
+
+        with (
+            patch(
+                "nemo_rl.models.policy.workers.patches._get_transformer_engine_file",
+                return_value=str(dpa_utils_path),
+            ),
+            patch.dict(sys.modules, {module_name: fake_module}),
+            patch("importlib.reload") as mock_reload,
+        ):
+            apply_transformer_engine_sm103_flash_attention_patch()
+
+        mock_reload.assert_called_once_with(fake_module)

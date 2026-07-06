@@ -13,8 +13,10 @@
 # limitations under the License.
 
 set -euo pipefail
-# Qwen 3.5-specific NeMo-Gym launcher. The container is expected to be built
-# from this branch, so no runtime source overlays are mounted.
+# Qwen 3.5-specific NeMo-Gym launcher. By default, source directories from the
+# host checkout overlay the baked checkout so Python and launcher fixes can be
+# tested without rebuilding dependency layers. Set NRL_SOURCE_OVERLAY=0 to use
+# only the source baked into the image.
 # ----- PARAMETERS -----
 # Optional: WANDB_API_KEY, HF_TOKEN
 # Required: EXP_NAME, GPUS_PER_NODE, HF_CKPT_PATH, NEMO_GYM_SWE_TRAIN_DATA_PATH,
@@ -168,6 +170,10 @@ EOF
 
 echo -e "Running command:\n$COMMAND"
 
+# Preserve node-local Ray logs during long jobs so worker failures remain
+# diagnosable after Slurm tears down the allocation.
+export RAY_LOG_SYNC_FREQUENCY="${RAY_LOG_SYNC_FREQUENCY:-120}"
+
 # Async rollout collection can legitimately idle the training GPU pool while
 # the replay buffer fills. Use the cluster's documented benchmarking exemption.
 SLURM_IDLE_EXEMPT_MINS="${SLURM_IDLE_EXEMPT_MINS:-60}"
@@ -200,6 +206,12 @@ MOUNTS="${MOUNTS},${NEMO_GYM_SWE_SIF_DIR}:${CONTAINER_NEMO_GYM_SWE_SIF_DIR}"
 # Compatibility mount for configs that pass host-side sif_dir or include
 # absolute host-side container_formatter entries.
 MOUNTS="${MOUNTS},${NEMO_GYM_SWE_SIF_DIR}:${NEMO_GYM_SWE_SIF_DIR}"
+NRL_SOURCE_OVERLAY="${NRL_SOURCE_OVERLAY:-1}"
+if [[ "${NRL_SOURCE_OVERLAY}" == "1" ]]; then
+    for overlay_dir in nemo_rl examples qwen_35; do
+        MOUNTS="${MOUNTS},${REPO_LOCATION}/${overlay_dir}:${CONTAINER_REPO_LOCATION}/${overlay_dir}"
+    done
+fi
 if [[ -n "${EXTRA_MOUNTS:-}" ]]; then
     MOUNTS="${MOUNTS},${EXTRA_MOUNTS}"
 fi

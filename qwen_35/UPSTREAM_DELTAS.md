@@ -1,6 +1,6 @@
 # Qwen 3.5 Runtime Delta Audit
 
-Last updated: 2026-07-05
+Last updated: 2026-07-06
 
 This document records the code and build differences between the pinned upstream
 software in the Qwen 3.5 nightly base image and the image used for the current
@@ -300,27 +300,132 @@ These SHA-256 values identify the files used for the `a301b30d5` image layer:
 ## Changes After the Audited Image
 
 The repository has advanced since `a301b30d5`. These changes are not all present
-in the inspected squashfs:
+in the inspected squashfs. In particular, **no built image is claimed to contain
+the candidate source state below** until the Dockerfile has been rebuilt and its
+registry digest recorded.
 
 | Change | Current effect |
 | --- | --- |
 | Qwen launcher uses the documented `benchmarking` idle-GPU exemption, a 60-minute default, and an explicit GRPO/vLLM rollout-warmup description | Committed after `a301b30d5`; copied into the next image only |
 | Main Qwen config sets `megatron_cfg.attention_backend: flash` | Source-tree change after `a301b30d5`; copied into the next image only |
 | AWS launch helpers select the `a301b30d5` squashfs, force the Flash attention override, and select vLLM's compiled-DAG `RayDistributedExecutor` | Host-only; the Ray V2 image patch remains present but is inactive |
-| Qwen 3.5 MoE refit skips layers outside each vLLM pipeline stage using vLLM's `start_layer` and `end_layer` range, including streamed calls with no local tensor | Required for vLLM pipeline parallelism greater than one; copied into the next image only |
-| `nemo_rl/models/generation/vllm/vllm_worker_async.py` adds a lock around concurrent vLLM ZeroMQ multipart sends | Uncommitted and **not copied by this Dockerfile** |
-| `nemo_rl/models/megatron/setup.py` restores newer setup/checkpoint/draft/attention contracts | Uncommitted and **not copied by this Dockerfile** |
-| `nemo_rl/models/policy/workers/megatron_policy_worker.py` restores newer worker/refit/reference-policy contracts | Uncommitted and **not copied by this Dockerfile** |
+| Async GRPO starts background trajectory collection only after the initial policy-to-generation refit | Prevents requests from being served from vLLM's dummy initialization; source overlay or rebuilt image required |
+| Qwen 3.5 MoE refit splits stacked expert exports on the policy sender and delegates all writes to vLLM's native loader | Replaces the D4 model-internal copier; source overlay or rebuilt image required |
+| Qwen config selects the Triton MoE backend | Keeps native vLLM refit tensors in the standard per-expert layout |
+| Qwen config enables sequence packing | Matches the current Megatron-Core GDN packed-sequence support and requires a distributed training smoke |
+| Qwen config defaults vLLM to eager execution and disables combo-kernel benchmarking for opt-in compiled runs | Avoids first-traffic TP stalls that previously killed engines; decode-only CUDA graphs remain an explicit smoke override |
+| Train and validation agents use a 1200-second limit | Preserves full production rollout behavior in both the base and benchmark recipes rather than relying on launcher-only overrides |
+| TransformerEngine's FlashAttention-2 support gate includes Blackwell compute capability `sm_103` | Qwen-only actor-init patch; required for Qwen's head dimension on GB300 until the pinned TE gate includes `sm_103` upstream |
+| The default and explicit Megatron process groups use a configurable 60-minute NCCL watchdog and enable timeout flight-recorder dumps | Diagnostic and liveness change; it does not recover a failed collective |
+| The Qwen launcher overlays host `nemo_rl`, `examples`, and `qwen_35` source by default | Development-only fast iteration; set `NRL_SOURCE_OVERLAY=0` for an image-only audited run |
+| The Gym config pins the baked OpenHands revision and tries both supported SIF layouts | Removes an environment-version ambiguity and supports both existing container directory structures |
+| Gym transient HTTP disconnect retries are capped at 120 seconds by default | A dead vLLM engine fails affected rollouts instead of wedging collection forever; D3 then applies the configured failure policy |
+| Checkpointing saves every five steps and retains the expected convergence-window checkpoints | Supports restart across short Slurm windows; optimizer state remains disabled |
+| `nemo_rl/models/generation/vllm/vllm_worker_async.py` adds a lock around concurrent vLLM ZeroMQ multipart sends | Source overlay or rebuilt image required |
+| `nemo_rl/models/megatron/setup.py` restores newer setup/checkpoint/draft/attention contracts | Source overlay or rebuilt image required |
+| `nemo_rl/models/policy/workers/megatron_policy_worker.py` restores newer worker/refit/reference-policy contracts | Source overlay or rebuilt image required |
 | Host smoke launchers under `qwen35_aws_cmh_main_launchers/` | Host-only; not copied into the image |
 
-The current working-tree hashes for files changed since the audited image are:
+### Candidate D4 Replacement: Native vLLM MoE Refit
 
-| File | Current SHA-256 |
+The candidate removes `qwen35_moe_refit.py` and
+`nightly-qwen35-moe-refit.patch`, including the 239-line code path that wrote
+directly into vLLM's internal fused expert parameters. Instead:
+
+1. `MegatronPolicyWorker` detects Qwen's stacked three-dimensional
+   `gate_up_proj` and `down_proj` exports when
+   `NRL_REFIT_SPLIT_FUSED_EXPERTS=1`.
+2. It emits standard per-expert `gate_proj.weight`, `up_proj.weight`, and
+   `down_proj.weight` tensors, keeping names and payloads in the same stream.
+3. `VllmInternalWorkerExtension` passes those tensors to the pinned vLLM
+   model's public `load_weights` implementation.
+4. A small diagnostic fallback retries individual tensors only after a batch
+   failure so the rejected name, shape, and dtype are visible.
+
+This is smaller and avoids assumptions about vLLM's private fused tensor layout.
+It still changes parameter-export shape and therefore requires tensor-equivalence
+and post-refit output checks before release. The split is opt-in and the Qwen
+recipe is the only configuration that enables it.
+
+### Candidate D9: Enable TE FlashAttention-2 on `sm_103`
+
+| Field | Value |
 | --- | --- |
-| Nightly Qwen Dockerfile | `cd75c818d0e87583f2c74c71508420383c7064b5396ece3776eb2b26e09b5ccd` |
-| Main Qwen config | `bcbcaa3273ce2b6791e72ee01453c8c49a13a0fc0af957b2f958d1870366d3d3` |
-| Qwen launcher | `86ff737694ad4e687cbc570e5ffa9fd50e510e96a348a4025b226e318b98ec00` |
-| Qwen 3.5 MoE refit helper | `be9fcedb00c7a896aecb862454537bdc9aa6097c875c4e70dc267294c335d1d8` |
+| Upstream component | TransformerEngine 2.15 |
+| Target | `transformer_engine/pytorch/attention/dot_product_attention/utils.py` in generated actor environments |
+| Installer | `apply_transformer_engine_sm103_flash_attention_patch` in `nemo_rl/models/policy/workers/patches.py` |
+| Size | One compute-capability tuple added to an existing allowlist |
+| Status | Required GB300 compatibility workaround |
+
+The pinned TE gate disables FlashAttention-2 for head dimensions above 192 on
+all architectures except an explicit allowlist. The candidate adds `(10, 3)` to
+that list. It does not alter attention math or select a different backend; it
+allows the already-installed FlashAttention implementation on GB300. The Qwen
+recipe opts in with `NRL_TE_ENABLE_SM103_FLASH_ATTENTION_PATCH=1`. Each policy
+actor locates its actual uv-environment file, applies the exact edit before
+model construction, and reloads the utility module if necessary. Actor startup
+fails if the exact pinned expression is neither found nor already patched,
+avoiding a fuzzy edit on a future TE version or a silent unfused fallback.
+
+### Candidate D10: Correct Async Initialization Ordering
+
+`async_grpo_train` now completes the initial generation refit before starting
+background collection. The generation engines are initialized with dummy
+weights, so the prior ordering could produce valid-looking but meaningless
+rollouts before refit completed. This change delays collection; it does not
+alter prompts, sampled tokens, rewards, or training data after the correct
+weights are loaded.
+
+### Candidate D11: Distributed Diagnostics and Source Iteration
+
+The Qwen recipe explicitly configures a 60-minute watchdog for both PyTorch's
+default process group and Megatron's TP/PP/EP/DP groups, plus NCCL flight-recorder
+output under `/logs`. The launcher also requests periodic Ray log synchronization.
+These settings improve diagnosis and avoid the pinned 10-minute subgroup timeout;
+they do not suppress or retry a failed collective.
+
+For development, the launcher overlays the host checkout's `nemo_rl`, `examples`,
+and `qwen_35` directories. It deliberately does not overlay dependencies or
+`3rdparty`, so Gym, Bridge, Megatron-Core, TE, vLLM, and package versions still
+come from the image. Audited runs must disable the overlay and use a rebuilt,
+digest-pinned image.
+
+### Candidate D12: Bound Gym Transient Disconnect Retries
+
+| Field | Value |
+| --- | --- |
+| Upstream component | NeMo Gym |
+| Target | `nemo_gym/server_utils.py` |
+| Patch | `docker/gym/nightly-gym-bounded-transient-retries.patch` |
+| Size | 9 insertions |
+| Status | Required liveness workaround |
+
+The pinned Gym client retries `ServerDisconnectedError` and `ClientOSError`
+forever. The patch raises the original exception after
+`NEMO_GYM_TRANSIENT_RETRY_SECONDS` (120 seconds by default), allowing NeMo-RL's
+explicit rollout-failure policy to run. It does not convert the request into a
+success or reward. The 120-second window is independent of the 1200-second
+agent and test timeouts; it applies only to a continuously disconnected HTTP
+transport.
+
+The audited-image hashes above remain the identity of `a301b30d5`. Candidate
+working-tree files must receive new hashes only after they are committed and a
+new image is built. The deleted D4 helper and patch remain listed above solely
+because they are present in that historical squashfs.
+
+### Reviewed Engineer Fixes Not Carried
+
+The comparison also included fixes from `mfutrega/mlperf-training-qwen35-main`.
+The following were intentionally not copied:
+
+| Engineer change | Decision |
+| --- | --- |
+| Full-file `log.py` and `utils.py` R2E evaluation overrides | Not applicable to the inspected `a301b30d5` squashfs: both files match the clean `nv-R2E-Gym` `local-eval` source, and its Gym adapter does not contain the reported non-idempotent runtime import repair. Vendoring those files would broaden the dependency delta without fixing this image. |
+| Full-file `server_utils.py` bind mount | Replaced by Candidate D12's nine-line patch against the exact pinned Gym file. |
+| Hard-coded uv-cache path for the TE file | Replaced by Candidate D9's actor-side package lookup, exact source guard, file lock, and module reload. |
+| `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` and temporary memory snapshots | Not retained. The observed quadratic allocation came from unfused attention; the allocator setting did not address that cause and can add refit overhead. |
+| `TORCH_NCCL_ASYNC_ERROR_HANDLING=0` | Not retained. vLLM resets this setting for its process groups, and disabling asynchronous error handling can turn attributable failures into hangs. |
+| Blanket removal of CUDA-graph experiments | Eager execution is now the recipe default. Existing decode-only CUDA-graph launchers remain explicitly named, opt-in experiments rather than the qualified production path. |
 
 Do not claim that a branch fix is in a container unless the Dockerfile copies or
 patches that file and the resulting registry digest was rebuilt after the fix.
