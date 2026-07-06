@@ -103,11 +103,14 @@ python -m py_compile \
     nemo_rl/models/generation/vllm/vllm_backend.py \
     nemo_rl/models/generation/vllm/vllm_worker_async.py
 python - <<'PY'
+from types import SimpleNamespace
+
 import torch
 
 from nemo_rl.models.generation.vllm.vllm_worker_async import _replace_prefix_tokens
 from nemo_rl.models.generation.vllm.qwen35_moe_refit import (
     _copy_expert_tensor,
+    _load_qwen35_moe_weights,
     _qwen35_moe_export_spec,
 )
 
@@ -126,6 +129,48 @@ destination = torch.nn.Parameter(torch.zeros(1, 2, 3, 4))
 _copy_expert_tensor(destination, 0, source, "down_proj")
 expected = source.view(2, 4, 3).permute(0, 2, 1)
 torch.testing.assert_close(destination[0], expected)
+
+
+class _Experts:
+    def __init__(self):
+        self.w13_weight = torch.nn.Parameter(torch.zeros(1, 2, 2))
+
+    @staticmethod
+    def _map_global_expert_id_to_local_expert_id(global_expert_id):
+        return global_expert_id
+
+
+pp_weights = [
+    (
+        "layers.0.mlp.experts.gate_up_proj",
+        torch.full((1, 2, 2), 3.0),
+        0,
+        "gate_up_proj",
+    ),
+    (
+        "layers.1.mlp.experts.gate_up_proj",
+        torch.full((1, 2, 2), 7.0),
+        1,
+        "gate_up_proj",
+    ),
+]
+for local_idx, expected_value in ((0, 3.0), (1, 7.0)):
+    layers = [object(), object()]
+    local_layer = SimpleNamespace(mlp=SimpleNamespace(experts=_Experts()))
+    layers[local_idx] = local_layer
+    inner_model = SimpleNamespace(
+        layers=layers,
+        start_layer=local_idx,
+        end_layer=local_idx + 1,
+    )
+    model_runner = SimpleNamespace(
+        model=SimpleNamespace(language_model=SimpleNamespace(model=inner_model))
+    )
+    _load_qwen35_moe_weights(pp_weights, model_runner)
+    torch.testing.assert_close(
+        local_layer.mlp.experts.w13_weight,
+        torch.full((1, 2, 2), expected_value),
+    )
 
 
 class _Tokenizer:

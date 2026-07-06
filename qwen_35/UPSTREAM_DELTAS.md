@@ -181,7 +181,7 @@ frequency.
 | Targets | `nemo_rl/models/generation/vllm/vllm_backend.py` plus one new helper module |
 | Patch | `docker/gym/nightly-qwen35-moe-refit.patch` |
 | Added module | `docker/gym/qwen35-nightly-moe-refit.py` copied as `qwen35_moe_refit.py` |
-| Size | 4 insertions, 2 deletions, plus a 231-line helper module |
+| Size | 4 insertions, 2 deletions, plus a 237-line helper module |
 | Status | Required model-state correctness workaround; high review priority |
 
 The base vLLM loader does not consume the three-dimensional expert tensors
@@ -193,7 +193,8 @@ exported for this Qwen 3.5 MoE path. The helper:
 4. Reshapes the exported expert tensors into vLLM's fused `w13_weight` and
    `w2_weight` layouts.
 5. Copies only the experts owned by the local expert-parallel rank.
-6. Fails on rank mismatches, missing destinations, source dimensions larger than
+6. Skips global layers outside the local vLLM pipeline-parallel stage.
+7. Fails on rank mismatches, missing destinations, source dimensions larger than
    the destination, or a zero-copy result.
 
 This is parameter-loading code, so it needs stronger evidence than a launch
@@ -305,18 +306,20 @@ in the inspected squashfs:
 | Qwen launcher uses the documented `benchmarking` idle-GPU exemption, a 60-minute default, and an explicit GRPO/vLLM rollout-warmup description | Committed after `a301b30d5`; copied into the next image only |
 | Main Qwen config sets `megatron_cfg.attention_backend: flash` | Source-tree change after `a301b30d5`; copied into the next image only |
 | AWS launch helpers select the `a301b30d5` squashfs, force the Flash attention override, and select vLLM's compiled-DAG `RayDistributedExecutor` | Host-only; the Ray V2 image patch remains present but is inactive |
+| Qwen 3.5 MoE refit skips layers outside each vLLM pipeline stage using vLLM's `start_layer` and `end_layer` range | Required for vLLM pipeline parallelism greater than one; copied into the next image only |
 | `nemo_rl/models/generation/vllm/vllm_worker_async.py` adds a lock around concurrent vLLM ZeroMQ multipart sends | Uncommitted and **not copied by this Dockerfile** |
 | `nemo_rl/models/megatron/setup.py` restores newer setup/checkpoint/draft/attention contracts | Uncommitted and **not copied by this Dockerfile** |
 | `nemo_rl/models/policy/workers/megatron_policy_worker.py` restores newer worker/refit/reference-policy contracts | Uncommitted and **not copied by this Dockerfile** |
 | Host smoke launchers under `qwen35_aws_cmh_main_launchers/` | Host-only; not copied into the image |
 
-The current working-tree hashes for the two files that a future build would copy
-are:
+The current working-tree hashes for files changed since the audited image are:
 
 | File | Current SHA-256 |
 | --- | --- |
-| Main Qwen config | `4e4bff8bca959c2419f70dc6d26b4bb3e8a87ef66e8022dc8118d8963e45c01c` |
+| Nightly Qwen Dockerfile | `9636909869dc84a5e8a42c74796eb320f3b6b13e499ee8679edb2a0fa2c1d5d5` |
+| Main Qwen config | `bcbcaa3273ce2b6791e72ee01453c8c49a13a0fc0af957b2f958d1870366d3d3` |
 | Qwen launcher | `86ff737694ad4e687cbc570e5ffa9fd50e510e96a348a4025b226e318b98ec00` |
+| Qwen 3.5 MoE refit helper | `8053d9fe0360e1a0295c0e1c28d46cbc2f765f6e8a684c466109c2cb0df7103a` |
 
 Do not claim that a branch fix is in a container unless the Dockerfile copies or
 patches that file and the resulting registry digest was rebuilt after the fix.

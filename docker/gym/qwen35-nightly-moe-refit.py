@@ -158,9 +158,15 @@ def _load_qwen35_moe_weights(
             f"{_weight_summary(name, weight)}"
         )
 
+    start_layer = getattr(inner_model, "start_layer", 0)
+    end_layer = getattr(inner_model, "end_layer", len(layers))
+
     copied = 0
     with torch.no_grad():
         for name, weight, layer_idx, kind in moe_weights:
+            if not start_layer <= layer_idx < end_layer:
+                continue
+
             try:
                 experts = layers[layer_idx].mlp.experts
             except (AttributeError, IndexError, TypeError) as exc:
