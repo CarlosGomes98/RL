@@ -160,13 +160,15 @@ def _load_qwen35_moe_weights(
 
     start_layer = getattr(inner_model, "start_layer", 0)
     end_layer = getattr(inner_model, "end_layer", len(layers))
+    local_moe_weights = [
+        item for item in moe_weights if start_layer <= item[2] < end_layer
+    ]
+    if not local_moe_weights:
+        return
 
     copied = 0
     with torch.no_grad():
-        for name, weight, layer_idx, kind in moe_weights:
-            if not start_layer <= layer_idx < end_layer:
-                continue
-
+        for name, weight, layer_idx, kind in local_moe_weights:
             try:
                 experts = layers[layer_idx].mlp.experts
             except (AttributeError, IndexError, TypeError) as exc:
@@ -196,16 +198,16 @@ def _load_qwen35_moe_weights(
                 copied += 1
 
     if copied == 0:
-        name, weight, _, _ = moe_weights[0]
+        name, weight, _, _ = local_moe_weights[0]
         raise RuntimeError(
             "Qwen3.5 refit found fused expert exports but copied no local experts; "
             f"{_weight_summary(name, weight)}"
         )
 
-    name, weight, _, _ = moe_weights[0]
+    name, weight, _, _ = local_moe_weights[0]
     print(
         f"[qwen35_moe_refit] copied {copied} local experts from "
-        f"{len(moe_weights)} tensors; first={_weight_summary(name, weight)}",
+        f"{len(local_moe_weights)} tensors; first={_weight_summary(name, weight)}",
         flush=True,
     )
 
