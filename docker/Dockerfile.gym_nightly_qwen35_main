@@ -47,8 +47,6 @@ COPY docker/gym/nightly-gym-bounded-transient-retries.patch \
     /tmp/nightly-gym-bounded-transient-retries.patch
 COPY docker/gym/qwen35-nightly-nemo-gym.patch \
     /tmp/qwen35-nightly-nemo-gym.patch
-COPY docker/gym/nightly-qwen35-multiturn-prefix.patch \
-    /tmp/nightly-qwen35-multiturn-prefix.patch
 COPY docker/gym/vllm-ray-v2-tcpstore-port.patch \
     /tmp/vllm-ray-v2-tcpstore-port.patch
 COPY docker/gym/apply_vllm_ray_v2_tcpstore_patch.sh \
@@ -88,14 +86,6 @@ elif git apply --reverse --check /tmp/qwen35-nightly-nemo-gym.patch; then
     echo "qwen35-nightly-nemo-gym.patch is already present in the nightly"
 else
     git apply --check /tmp/qwen35-nightly-nemo-gym.patch
-fi
-
-if git apply --check /tmp/nightly-qwen35-multiturn-prefix.patch; then
-    git apply /tmp/nightly-qwen35-multiturn-prefix.patch
-elif git apply --reverse --check /tmp/nightly-qwen35-multiturn-prefix.patch; then
-    echo "nightly-qwen35-multiturn-prefix.patch is already present in the nightly"
-else
-    git apply --check /tmp/nightly-qwen35-multiturn-prefix.patch
 fi
 
 grep -F 'Treating this rollout as a masked zero-reward trajectory' \
