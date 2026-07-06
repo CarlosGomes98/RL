@@ -29,8 +29,12 @@ The artifact inspected for this snapshot is:
 This candidate was built from the Dockerfile on a Blackwell ARM node, pushed to
 the GitLab registry, and freshly imported with Enroot on AWS. The squashfs
 superblock and a launcher-equivalent import/config probe passed on 2026-07-06.
-The registry tag is mutable; capture its immutable manifest digest before using
-this artifact for a final audited submission.
+Distributed smoke `1301374` then failed before weight loading because the image
+still copied a pre-nightly `vllm_worker_async.py` over the pinned vLLM 0.20-aware
+implementation. In particular, that copy omitted the required
+`openai_serving_render` argument. This artifact is therefore **not qualified**.
+The registry tag is mutable; capture an immutable manifest digest for the
+replacement image before using it for a final audited submission.
 
 ## Pinned Upstream Baseline
 
@@ -307,6 +311,7 @@ registry digest recorded.
 
 | Change | Current effect |
 | --- | --- |
+| Dockerfile removes full-file overrides of `vllm_backend.py`, `vllm_worker_async.py`, `megatron/setup.py`, `megatron_policy_worker.py`, and `patches.py` | Restores the pinned nightly APIs and carries only the guarded prefix, NCCL-timeout, refit-export, and TE `sm_103` patches listed below; requires a replacement image after failed smoke `1301374` |
 | Qwen launcher uses the documented `benchmarking` idle-GPU exemption, a 60-minute default, and an explicit GRPO/vLLM rollout-warmup description | Committed after `a301b30d5`; copied into the next image only |
 | Main Qwen config sets `megatron_cfg.attention_backend: flash` | Source-tree change after `a301b30d5`; copied into the next image only |
 | AWS launch helpers select the `a301b30d5` squashfs, force the Flash attention override, and select vLLM's compiled-DAG `RayDistributedExecutor` | Host-only; the Ray V2 image patch remains present but is inactive |
@@ -323,9 +328,6 @@ registry digest recorded.
 | The Gym config pins the baked OpenHands revision and tries both supported SIF layouts | Removes an environment-version ambiguity and supports both existing container directory structures |
 | Gym transient HTTP disconnect retries are capped at 120 seconds by default | A dead vLLM engine fails affected rollouts instead of wedging collection forever; D3 then applies the configured failure policy |
 | Checkpointing saves every five steps and retains the expected convergence-window checkpoints | Supports restart across short Slurm windows; optimizer state remains disabled |
-| `nemo_rl/models/generation/vllm/vllm_worker_async.py` adds a lock around concurrent vLLM ZeroMQ multipart sends | Source overlay or rebuilt image required |
-| `nemo_rl/models/megatron/setup.py` restores newer setup/checkpoint/draft/attention contracts | Source overlay or rebuilt image required |
-| `nemo_rl/models/policy/workers/megatron_policy_worker.py` restores newer worker/refit/reference-policy contracts | Source overlay or rebuilt image required |
 | Host smoke launchers under `qwen35_aws_cmh_main_launchers/` | Host-only; not copied into the image |
 
 ### Candidate D4 Replacement: Native vLLM MoE Refit
@@ -339,15 +341,18 @@ directly into vLLM's internal fused expert parameters. Instead:
    `NRL_REFIT_SPLIT_FUSED_EXPERTS=1`.
 2. It emits standard per-expert `gate_proj.weight`, `up_proj.weight`, and
    `down_proj.weight` tensors, keeping names and payloads in the same stream.
-3. `VllmInternalWorkerExtension` passes those tensors to the pinned vLLM
-   model's public `load_weights` implementation.
-4. A small diagnostic fallback retries individual tensors only after a batch
-   failure so the rejected name, shape, and dtype are visible.
+3. The unchanged nightly `VllmInternalWorkerExtension` passes those tensors to
+   the pinned vLLM model's public `load_weights` implementation.
 
 This is smaller and avoids assumptions about vLLM's private fused tensor layout.
 It still changes parameter-export shape and therefore requires tensor-equivalence
 and post-refit output checks before release. The split is opt-in and the Qwen
 recipe is the only configuration that enables it.
+
+| Field | Value |
+| --- | --- |
+| Patch | `docker/gym/nightly-qwen35-refit-split-experts.patch` |
+| Size | 44 insertions, 2 deletions |
 
 ### Candidate D9: Enable TE FlashAttention-2 on `sm_103`
 
@@ -355,8 +360,9 @@ recipe is the only configuration that enables it.
 | --- | --- |
 | Upstream component | TransformerEngine 2.15 |
 | Target | `transformer_engine/pytorch/attention/dot_product_attention/utils.py` in generated actor environments |
+| Patch | `docker/gym/nightly-qwen35-te-sm103.patch` |
 | Installer | `apply_transformer_engine_sm103_flash_attention_patch` in `nemo_rl/models/policy/workers/patches.py` |
-| Size | One compute-capability tuple added to an existing allowlist |
+| Size | 51 insertions, 1 deletion in NeMo-RL; runtime edit is one compute-capability tuple |
 | Status | Required GB300 compatibility workaround |
 
 The pinned TE gate disables FlashAttention-2 for head dimensions above 192 on
@@ -379,6 +385,11 @@ alter prompts, sampled tokens, rewards, or training data after the correct
 weights are loaded.
 
 ### Candidate D11: Distributed Diagnostics and Source Iteration
+
+| Field | Value |
+| --- | --- |
+| Patch | `docker/gym/nightly-qwen35-nccl-timeout.patch` |
+| Size | 16 insertions, 3 deletions |
 
 The Qwen recipe explicitly configures a 60-minute watchdog for both PyTorch's
 default process group and Megatron's TP/PP/EP/DP groups, plus NCCL flight-recorder

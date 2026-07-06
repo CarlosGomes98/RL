@@ -1,0 +1,64 @@
+diff --git a/nemo_rl/models/policy/workers/megatron_policy_worker.py b/nemo_rl/models/policy/workers/megatron_policy_worker.py
+--- a/nemo_rl/models/policy/workers/megatron_policy_worker.py
++++ b/nemo_rl/models/policy/workers/megatron_policy_worker.py
+@@ -97,6 +97,42 @@ from nemo_rl.utils.r3_trace import maybe_r3_trace_stage
+ TokenizerType = TypeVar("TokenizerType", bound=PreTrainedTokenizerBase)
+ 
+ 
++def _split_fused_expert_weight_for_vllm(
++    name: str, tensor: torch.Tensor
++) -> Iterator[tuple[str, torch.Tensor]]:
++    """Split a stacked Qwen MoE export into vLLM's per-expert tensors."""
++    if tensor.ndim != 3:
++        yield name, tensor
++        return
++
++    if name.endswith(".mlp.experts.gate_up_proj"):
++        if tensor.shape[1] % 2 != 0:
++            raise ValueError(
++                "Fused gate/up projection has an odd intermediate dimension: "
++                f"name={name!r}, shape={tuple(tensor.shape)}"
++            )
++        prefix = name[: -len("gate_up_proj")]
++        intermediate_size = tensor.shape[1] // 2
++        for expert_id in range(tensor.shape[0]):
++            yield (
++                f"{prefix}{expert_id}.gate_proj.weight",
++                tensor[expert_id, :intermediate_size],
++            )
++            yield (
++                f"{prefix}{expert_id}.up_proj.weight",
++                tensor[expert_id, intermediate_size:],
++            )
++        return
++
++    if name.endswith(".mlp.experts.down_proj"):
++        prefix = name[: -len("down_proj")]
++        for expert_id in range(tensor.shape[0]):
++            yield f"{prefix}{expert_id}.down_proj.weight", tensor[expert_id]
++        return
++
++    yield name, tensor
++
++
+ def _should_use_router_replay(
+     *,
+     enabled: bool,
+@@ -1285,9 +1321,15 @@ class MegatronPolicyWorkerImpl(
+             conversion_tasks=self.refit_conversion_tasks,  # used for metadata caching
+         )
+ 
+-        # Yield the original parameters first.
++        split_fused_experts = os.environ.get("NRL_REFIT_SPLIT_FUSED_EXPERTS") == "1"
++
++        # vLLM's native loader expects individual expert tensors. Splitting on
++        # the sender keeps refit metadata and payload names in lockstep.
+         for name, tensor in base_iter:
+-            yield name, tensor
++            if split_fused_experts:
++                yield from _split_fused_expert_weight_for_vllm(name, tensor)
++            else:
++                yield name, tensor
+ 
+         if self.draft_model is not None:
+             from nemo_rl.models.megatron.draft import export_eagle_weights_to_hf

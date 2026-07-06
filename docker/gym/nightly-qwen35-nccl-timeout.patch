@@ -1,0 +1,43 @@
+diff --git a/nemo_rl/models/megatron/setup.py b/nemo_rl/models/megatron/setup.py
+--- a/nemo_rl/models/megatron/setup.py
++++ b/nemo_rl/models/megatron/setup.py
+@@ -12,6 +12,7 @@
+ # See the License for the specific language governing permissions and
+ # limitations under the License.
+ 
++import datetime
+ import hashlib
+ import json
+ import os
+@@ -213,9 +214,15 @@ def setup_distributed() -> None:
+     destroy_parallel_state()
+     # Pin the communicator to the correct GPU explicitly.
+     local_rank = int(os.environ["LOCAL_RANK"])
+-    torch.distributed.init_process_group(
+-        "nccl", device_id=torch.device(f"cuda:{local_rank}")
+-    )
++    process_group_kwargs: dict[str, Any] = {
++        "device_id": torch.device(f"cuda:{local_rank}")
++    }
++    timeout_minutes = os.environ.get("NRL_NCCL_TIMEOUT_MINUTES")
++    if timeout_minutes is not None:
++        process_group_kwargs["timeout"] = datetime.timedelta(
++            minutes=int(timeout_minutes)
++        )
++    torch.distributed.init_process_group("nccl", **process_group_kwargs)
+ 
+ 
+ def validate_and_set_config(
+@@ -1153,6 +1160,12 @@ def setup_model_and_optimizer(
+     # TODO: Freeze state.cfg
+ 
+     megatron_cfg.dist.external_gpu_device_mapping = True
++    timeout_minutes = os.environ.get("NRL_NCCL_TIMEOUT_MINUTES")
++    if timeout_minutes is not None:
++        # MCore assigns explicit timeouts to its TP/PP/EP/DP subgroups.
++        megatron_cfg.dist.distributed_timeout_minutes = int(timeout_minutes)
++    if os.environ.get("NRL_NCCL_FLIGHT_RECORDER_DUMP_ON_TIMEOUT") == "1":
++        megatron_cfg.dist.flight_recorder_dump_on_timeout = True
+     initialize_megatron(
+         cfg=megatron_cfg,
+         get_embedding_ranks=get_embedding_ranks,

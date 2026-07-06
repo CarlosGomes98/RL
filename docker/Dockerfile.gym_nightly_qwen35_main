@@ -26,22 +26,12 @@ WORKDIR /opt/nemo-rl
 COPY qwen_35/ /opt/nemo-rl/qwen_35/
 COPY examples/nemo_gym/launch_qwen35_nemo_gym_multinode_training.sh \
     /opt/nemo-rl/examples/nemo_gym/launch_qwen35_nemo_gym_multinode_training.sh
-# Keep the source override surface explicit. These files contain the Qwen async
-# initialization, refit, distributed-timeout, and vLLM transport fixes carried
-# by this branch. Apart from the pinned MLPerf packages installed below,
-# dependencies and all other NeMo-RL modules remain from nightly.
+# Keep the source override surface explicit. Guarded patches below carry the
+# Qwen-specific runtime changes without replacing nightly modules wholesale.
+# Apart from the pinned MLPerf packages installed below, dependencies and all
+# other NeMo-RL modules remain from nightly.
 COPY nemo_rl/algorithms/mlperf_grpo_logging.py \
     /opt/nemo-rl/nemo_rl/algorithms/mlperf_grpo_logging.py
-COPY nemo_rl/models/generation/vllm/vllm_backend.py \
-    /opt/nemo-rl/nemo_rl/models/generation/vllm/vllm_backend.py
-COPY nemo_rl/models/generation/vllm/vllm_worker_async.py \
-    /opt/nemo-rl/nemo_rl/models/generation/vllm/vllm_worker_async.py
-COPY nemo_rl/models/megatron/setup.py \
-    /opt/nemo-rl/nemo_rl/models/megatron/setup.py
-COPY nemo_rl/models/policy/workers/megatron_policy_worker.py \
-    /opt/nemo-rl/nemo_rl/models/policy/workers/megatron_policy_worker.py
-COPY nemo_rl/models/policy/workers/patches.py \
-    /opt/nemo-rl/nemo_rl/models/policy/workers/patches.py
 COPY docker/gym/qwen35-gym-vllm-model.patch /tmp/qwen35-gym-vllm-model.patch
 COPY docker/gym/nightly-swe-agent-apptainer-logs.patch \
     /tmp/nightly-swe-agent-apptainer-logs.patch
@@ -50,6 +40,14 @@ COPY docker/gym/nightly-gym-bounded-transient-retries.patch \
 COPY docker/gym/qwen35-nightly-nemo-gym.patch \
     /tmp/qwen35-nightly-nemo-gym.patch
 COPY docker/gym/qwen35-nightly-grpo.patch /tmp/qwen35-nightly-grpo.patch
+COPY docker/gym/nightly-qwen35-multiturn-prefix.patch \
+    /tmp/nightly-qwen35-multiturn-prefix.patch
+COPY docker/gym/nightly-qwen35-nccl-timeout.patch \
+    /tmp/nightly-qwen35-nccl-timeout.patch
+COPY docker/gym/nightly-qwen35-refit-split-experts.patch \
+    /tmp/nightly-qwen35-refit-split-experts.patch
+COPY docker/gym/nightly-qwen35-te-sm103.patch \
+    /tmp/nightly-qwen35-te-sm103.patch
 COPY docker/gym/vllm-ray-v2-tcpstore-port.patch \
     /tmp/vllm-ray-v2-tcpstore-port.patch
 COPY docker/gym/apply_vllm_ray_v2_tcpstore_patch.sh \
@@ -84,6 +82,10 @@ EOF
 RUN <<"EOF" bash -exu
 cd /opt/nemo-rl
 for patch in \
+    /tmp/nightly-qwen35-multiturn-prefix.patch \
+    /tmp/nightly-qwen35-nccl-timeout.patch \
+    /tmp/nightly-qwen35-refit-split-experts.patch \
+    /tmp/nightly-qwen35-te-sm103.patch \
     /tmp/qwen35-nightly-nemo-gym.patch \
     /tmp/qwen35-nightly-grpo.patch; do
     if git apply --check "${patch}"; then
@@ -98,6 +100,8 @@ done
 grep -F 'Treating this rollout as a masked zero-reward trajectory' \
     nemo_rl/environments/nemo_gym.py
 grep -F '_qwen35_replace_prefix_from_suffix_messages' \
+    nemo_rl/models/generation/vllm/vllm_worker_async.py
+grep -F 'openai_serving_render=openai_serving_render' \
     nemo_rl/models/generation/vllm/vllm_worker_async.py
 grep -F 'NRL_REFIT_SPLIT_FUSED_EXPERTS' \
     nemo_rl/models/policy/workers/megatron_policy_worker.py
