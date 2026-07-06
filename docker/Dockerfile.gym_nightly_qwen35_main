@@ -140,6 +140,11 @@ PY
 
 bash /tmp/apply_vllm_ray_v2_tcpstore_patch.sh
 
+# The driver intentionally does not install the optional MCore dependency;
+# Megatron is provided in policy actor environments. Verify that driver imports
+# remain lazy before publishing the image.
+uv run --no-sync python -c 'from nemo_rl.algorithms import grpo'
+
 CONTAINER_HF_CKPT_PATH=/tmp/qwen35-hf-checkpoint \
 NEMO_GYM_SWE_TRAIN_DATA_PATH=/tmp/qwen35-train.jsonl \
 NEMO_GYM_SWE_VALIDATION_DATA_PATH=/tmp/qwen35-validation.jsonl \

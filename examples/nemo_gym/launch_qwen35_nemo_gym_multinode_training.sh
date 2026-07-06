@@ -13,10 +13,9 @@
 # limitations under the License.
 
 set -euo pipefail
-# Qwen 3.5-specific NeMo-Gym launcher. By default, source directories from the
-# host checkout overlay the baked checkout so Python and launcher fixes can be
-# tested without rebuilding dependency layers. Set NRL_SOURCE_OVERLAY=0 to use
-# only the source baked into the image.
+# Qwen 3.5-specific NeMo-Gym launcher. By default, training uses the source baked
+# into the image. Set NRL_SOURCE_OVERLAY=1 only for deliberate development tests
+# against a host checkout compatible with the image's dependency revisions.
 # ----- PARAMETERS -----
 # Optional: WANDB_API_KEY, HF_TOKEN
 # Required: EXP_NAME, GPUS_PER_NODE, HF_CKPT_PATH, NEMO_GYM_SWE_TRAIN_DATA_PATH,
@@ -149,7 +148,7 @@ NEMO_GYM_SWE_VALIDATION_DATA_PATH="${CONTAINER_NEMO_GYM_SWE_VALIDATION_DATA_PATH
 NEMO_GYM_SWE_SIF_DIR="${CONTAINER_NEMO_GYM_SWE_SIF_DIR}" \
 MLPERF_SUBMISSION_ORG="${MLPERF_SUBMISSION_ORG}" \
 MLPERF_SUBMISSION_PLATFORM="${MLPERF_SUBMISSION_PLATFORM}" \
-uv run examples/nemo_gym/run_grpo_nemo_gym.py \
+uv run --no-sync examples/nemo_gym/run_grpo_nemo_gym.py \
     --config ${RECIPE} \
     ++logger.mlperf_enabled=True \
     ++logger.mlperf.log_file=${OUT_DIR}/logs/mllogger.log \
@@ -206,7 +205,7 @@ MOUNTS="${MOUNTS},${NEMO_GYM_SWE_SIF_DIR}:${CONTAINER_NEMO_GYM_SWE_SIF_DIR}"
 # Compatibility mount for configs that pass host-side sif_dir or include
 # absolute host-side container_formatter entries.
 MOUNTS="${MOUNTS},${NEMO_GYM_SWE_SIF_DIR}:${NEMO_GYM_SWE_SIF_DIR}"
-NRL_SOURCE_OVERLAY="${NRL_SOURCE_OVERLAY:-1}"
+NRL_SOURCE_OVERLAY="${NRL_SOURCE_OVERLAY:-0}"
 if [[ "${NRL_SOURCE_OVERLAY}" == "1" ]]; then
     for overlay_dir in nemo_rl examples qwen_35; do
         MOUNTS="${MOUNTS},${REPO_LOCATION}/${overlay_dir}:${CONTAINER_REPO_LOCATION}/${overlay_dir}"

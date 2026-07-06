@@ -317,7 +317,7 @@ registry digest recorded.
 | Train and validation agents use a 1200-second limit | Preserves full production rollout behavior in both the base and benchmark recipes rather than relying on launcher-only overrides |
 | TransformerEngine's FlashAttention-2 support gate includes Blackwell compute capability `sm_103` | Qwen-only actor-init patch; required for Qwen's head dimension on GB300 until the pinned TE gate includes `sm_103` upstream |
 | The default and explicit Megatron process groups use a configurable 60-minute NCCL watchdog and enable timeout flight-recorder dumps | Diagnostic and liveness change; it does not recover a failed collective |
-| The Qwen launcher overlays host `nemo_rl`, `examples`, and `qwen_35` source by default | Development-only fast iteration; set `NRL_SOURCE_OVERLAY=0` for an image-only audited run |
+| The Qwen launcher uses baked source by default and supports an explicit host-source overlay | Audited runs use the image unchanged; set `NRL_SOURCE_OVERLAY=1` only for development against a compatible checkout |
 | The Gym config pins the baked OpenHands revision and tries both supported SIF layouts | Removes an environment-version ambiguity and supports both existing container directory structures |
 | Gym transient HTTP disconnect retries are capped at 120 seconds by default | A dead vLLM engine fails affected rollouts instead of wedging collection forever; D3 then applies the configured failure policy |
 | Checkpointing saves every five steps and retains the expected convergence-window checkpoints | Supports restart across short Slurm windows; optimizer state remains disabled |
@@ -384,11 +384,12 @@ output under `/logs`. The launcher also requests periodic Ray log synchronizatio
 These settings improve diagnosis and avoid the pinned 10-minute subgroup timeout;
 they do not suppress or retry a failed collective.
 
-For development, the launcher overlays the host checkout's `nemo_rl`, `examples`,
+The launcher uses the image's baked source by default. For deliberate development
+tests, `NRL_SOURCE_OVERLAY=1` overlays the host checkout's `nemo_rl`, `examples`,
 and `qwen_35` directories. It deliberately does not overlay dependencies or
-`3rdparty`, so Gym, Bridge, Megatron-Core, TE, vLLM, and package versions still
-come from the image. Audited runs must disable the overlay and use a rebuilt,
-digest-pinned image.
+`3rdparty`, so the host source must remain compatible with Gym, Bridge,
+Megatron-Core, TE, vLLM, and package versions from the image. Audited runs keep
+the overlay disabled and use a rebuilt, digest-pinned image.
 
 ### Candidate D12: Bound Gym Transient Disconnect Retries
 

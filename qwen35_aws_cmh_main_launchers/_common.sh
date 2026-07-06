@@ -25,8 +25,11 @@ RESULTS_ROOT="${RESULTS_ROOT:-${REPO_ROOT}/results}"
 LAUNCHER="${LAUNCHER:-${REPO_ROOT}/examples/nemo_gym/launch_qwen35_nemo_gym_multinode_training.sh}"
 
 export REPO_LOCATION="${REPO_LOCATION:-${REPO_ROOT}}"
-DEFAULT_QWEN35_CONTAINER_IMAGE_PATH="/lustre/fsw/portfolios/coreai/projects/coreai_mlperf_training/containers/dl+mlperf+optimized+nemo-rl-nightly-qwen35-ea7c4f9-a301b30d5.sqsh"
+DEFAULT_QWEN35_CONTAINER_IMAGE_PATH="/lustre/fsw/portfolios/coreai/projects/coreai_mlperf_training/containers/dl+mlperf+optimized+nemo-rl-nightly-qwen35-ea7c4f9-7713eee74.sqsh"
 export CONTAINER_IMAGE_PATH="${QWEN35_CONTAINER_IMAGE_PATH:-${CONTAINER_IMAGE_PATH:-${DEFAULT_QWEN35_CONTAINER_IMAGE_PATH}}}"
+# The image contains the qualified Qwen source. Overlaying the whole host tree
+# can replace untouched nightly modules with incompatible branch-era versions.
+export NRL_SOURCE_OVERLAY="${NRL_SOURCE_OVERLAY:-0}"
 export SLURM_ACCOUNT="${SLURM_ACCOUNT:-coreai_mlperf_training}"
 export SLURM_PARTITION="${SLURM_PARTITION:-batch}"
 export SLURM_TIME="${SLURM_TIME:-04:00:00}"
