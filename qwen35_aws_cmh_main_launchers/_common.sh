@@ -18,6 +18,7 @@ set -euo pipefail
 # Do not leak a host virtual environment into the container's uv environment.
 unset VIRTUAL_ENV
 export CUDA_DEVICE_MAX_CONNECTIONS="${CUDA_DEVICE_MAX_CONNECTIONS:-1}"
+export NCCL_LAUNCH_ORDER_IMPLICIT="${NCCL_LAUNCH_ORDER_IMPLICIT:-1}"
 
 REPO_ROOT="${REPO_ROOT:-/lustre/fsw/portfolios/coreai/projects/coreai_mlperf_training/users/arigazzi/RL-main}"
 RESULTS_ROOT="${RESULTS_ROOT:-${REPO_ROOT}/results}"
