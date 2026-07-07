@@ -55,6 +55,8 @@ export VLLM_USE_RAY_V2_EXECUTOR_BACKEND="${VLLM_USE_RAY_V2_EXECUTOR_BACKEND:-0}"
 # Allow long rollout-driven model steps to complete before Ray times out.
 export RAY_CGRAPH_get_timeout="${RAY_CGRAPH_get_timeout:-1210}"
 QWEN35_ATTENTION_BACKEND="${QWEN35_ATTENTION_BACKEND:-flash}"
+QWEN35_POLICY_VENV=/opt/ray_venvs/nemo_rl.models.policy.workers.megatron_policy_worker.MegatronPolicyWorker
+QWEN35_POLICY_LD_LIBRARY_PATH="${QWEN35_POLICY_VENV}/lib/python3.13/site-packages/torch/lib:/opt/amazon/ofi-nccl/lib:/opt/amazon/efa/lib:/opt/nemo_rl_venv/lib/python3.13/site-packages/nvidia/cudnn/lib:/usr/local/cuda/compat/lib:/usr/local/nvidia/lib:/usr/local/nvidia/lib64"
 
 BASELINE_OVERRIDES=(
     logger.wandb_enabled=False
@@ -65,6 +67,9 @@ BASELINE_OVERRIDES=(
     # vLLM 0.20 can deadlock Qwen 3.5 multi-node decode with CUDA graphs.
     policy.generation.vllm_cfg.enforce_eager=True
     ++policy.megatron_cfg.attention_backend="${QWEN35_ATTENTION_BACKEND}"
+    # DeepEP is loaded only by Megatron policy actors. Keep their pinned Torch
+    # libraries visible without changing library resolution for vLLM or Gym.
+    ++policy.megatron_cfg.env_vars.LD_LIBRARY_PATH="${QWEN35_POLICY_LD_LIBRARY_PATH}"
     policy.megatron_cfg.expert_model_parallel_size=32
     policy.megatron_cfg.scheduler.lr_warmup_iters=0
 )

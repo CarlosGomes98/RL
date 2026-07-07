@@ -501,6 +501,12 @@ pinned policy-venv Torch, and `--no-deps` prevents any dependency update.
 Qualification still requires a distributed GB300 run because file checks cannot
 validate the EP32 communication path, topology, or training numerics.
 
+The prebuilt policy venv links Torch through the nightly's uv archive, while the
+DeepEP extensions have an NVSHMEM RUNPATH but no Torch RUNPATH. The AWS launcher
+therefore adds that venv's `torch/lib` directory to `LD_LIBRARY_PATH` through
+`policy.megatron_cfg.env_vars`. This is scoped to Megatron policy actors; vLLM,
+Gym, and the driver retain the nightly's original library search path.
+
 ### Reviewed Engineer Fixes Not Carried
 
 The comparison also included fixes from `mfutrega/mlperf-training-qwen35-main`.
