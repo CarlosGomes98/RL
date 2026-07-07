@@ -205,6 +205,45 @@ head_node_ip=${ip_addresses_array[0]}
 
 ip_head=$head_node_ip:$PORT
 
+# Register the physical topology resources consumed by NeMo-RL's
+# topology-aware placement support. The nightly container groups workers by
+# nvlink_domain_* and orders them by topo_rank when cluster.segment_size is set.
+TOPO_PROBE_SCRIPT="$LOG_DIR/topology_probe.sh"
+cat > "$TOPO_PROBE_SCRIPT" <<TOPO_PROBE_EOF
+CLUSTER_UUID=\$(nvidia-smi -q 2>/dev/null | grep 'ClusterUUID' | head -1 | awk -F: '{print \$2}' | tr -d ' ')
+if [[ -z "\$CLUSTER_UUID" ]]; then
+  CLUSTER_UUID=""
+fi
+
+TOPO_RANK=""
+if [[ -n "\${SLURM_TOPOLOGY_ADDR:-}" && "\${SLURM_TOPOLOGY_ADDR_PATTERN:-}" == "block.node" ]]; then
+  _block_part="\${SLURM_TOPOLOGY_ADDR%%.*}"
+  _node_part="\${SLURM_TOPOLOGY_ADDR##*.}"
+  _block_digits=\$(echo "\$_block_part" | tr -dc '0-9')
+  _node_digits=\$(echo "\$_node_part" | tr -dc '0-9')
+  if [[ -n "\$_block_digits" && -n "\$_node_digits" ]]; then
+    TOPO_RANK=\$(( 10#\$_block_digits * 10000000000 + 10#\$_node_digits ))
+  fi
+elif [[ -n "\${SLURM_PROCID:-}" ]]; then
+  TOPO_RANK=\$(( 10#\$SLURM_PROCID ))
+else
+  _hostname_digits=\$(hostname | tr -dc '0-9')
+  if [[ -n "\$_hostname_digits" ]]; then
+    TOPO_RANK=\$(( 10#\$_hostname_digits ))
+  fi
+fi
+
+RAY_RESOURCES='{\"worker_units\": '"$GPUS_PER_NODE"', \"slurm_managed_ray_cluster\": 1'
+if [[ -n "\$CLUSTER_UUID" ]]; then
+  RAY_RESOURCES+=', \"nvlink_domain_'\${CLUSTER_UUID}'\": 1'
+fi
+if [[ -n "\$TOPO_RANK" ]]; then
+  RAY_RESOURCES+=', \"topo_rank\": '\$TOPO_RANK
+fi
+RAY_RESOURCES+='}'
+export RAY_RESOURCES
+TOPO_PROBE_EOF
+
 # First we start the head of the ray cluster on one of the physical nodes
 # Give the head node actual resources to make it schedulable
 
@@ -270,12 +309,14 @@ log-sync-sidecar &
 # Patch nsight.py before starting Ray head
 sed -i 's/context\.py_executable = " "\.join(self\.nsight_cmd) + " python"/context.py_executable = " ".join(self.nsight_cmd) + f" {context.py_executable}"/g' /opt/nemo_rl_venv/lib64/python*/site-packages/ray/_private/runtime_env/nsight.py
 
+source $TOPO_PROBE_SCRIPT
+
 cat <<EOFINNER | tee /launch-head.sh
 ray stop --force || true
 rm -rf /tmp/ray/session_latest /tmp/ray/session_[0-9]* || true
 ray start --head \
     --disable-usage-stats \
-    --resources="{\"worker_units\": $GPUS_PER_NODE, \"slurm_managed_ray_cluster\": 1}" \
+    --resources="\$RAY_RESOURCES" \
     --node-ip-address="$head_node_ip" \
     --port=${PORT} \
     --ray-client-server-port=${RAY_CLIENT_SERVER_PORT} \
@@ -379,12 +420,14 @@ log-sync-sidecar &
 # Patch nsight.py before starting Ray worker
 sed -i 's/context\.py_executable = " "\.join(self\.nsight_cmd) + " python"/context.py_executable = " ".join(self.nsight_cmd) + f" {context.py_executable}"/g' /opt/nemo_rl_venv/lib64/python*/site-packages/ray/_private/runtime_env/nsight.py
 
+source $TOPO_PROBE_SCRIPT
+
 cat <<EOFINNER | tee /launch-worker.sh
 ray stop --force || true
 rm -rf /tmp/ray/session_latest /tmp/ray/session_[0-9]* || true
 ray start --address "$ip_head" \
           --disable-usage-stats \
-          --resources="{\"worker_units\": $GPUS_PER_NODE, \"slurm_managed_ray_cluster\": 1}" \
+          --resources="\$RAY_RESOURCES" \
           --min-worker-port=${MIN_WORKER_PORT} \
           --max-worker-port=${MAX_WORKER_PORT} \
           \

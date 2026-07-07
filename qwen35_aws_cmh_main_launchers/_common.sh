@@ -36,6 +36,7 @@ export SLURM_TIME="${SLURM_TIME:-04:00:00}"
 export GPUS_PER_NODE="${GPUS_PER_NODE:-4}"
 export SBATCH_GRES="${SBATCH_GRES:-gpu:${GPUS_PER_NODE}}"
 export SBATCH_SEGMENT="${SBATCH_SEGMENT:-8}"
+QWEN35_CLUSTER_SEGMENT_SIZE="${QWEN35_CLUSTER_SEGMENT_SIZE:-${SBATCH_SEGMENT}}"
 export TRAIN_NODES="${TRAIN_NODES:-32}"
 export GEN_NODES="${GEN_NODES:-32}"
 export NODES="${NODES:-64}"
@@ -57,6 +58,7 @@ QWEN35_ATTENTION_BACKEND="${QWEN35_ATTENTION_BACKEND:-flash}"
 
 BASELINE_OVERRIDES=(
     logger.wandb_enabled=False
+    ++cluster.segment_size="${QWEN35_CLUSTER_SEGMENT_SIZE}"
     grpo.async_grpo.max_trajectory_age_steps=1
     env.nemo_gym.swe_agents_train.responses_api_agents.swe_agents.concurrency=256
     env.nemo_gym.swe_agents_val.responses_api_agents.swe_agents.concurrency=256
