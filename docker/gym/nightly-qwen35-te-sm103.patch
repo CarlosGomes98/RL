@@ -37,7 +37,7 @@ diff --git a/nemo_rl/models/policy/workers/patches.py b/nemo_rl/models/policy/wo
  def _get_transformer_engine_file(relative_path: str) -> str:
      """Return absolute path to a Transformer Engine file or raise if it cannot be found.
  
-@@ -104,3 +109,43 @@ def apply_transformer_engine_patch():
+@@ -104,3 +109,48 @@ def apply_transformer_engine_patch():
  
      except Exception as e:
          print(f"Error checking/patching transformer_engine: {e}")
@@ -80,4 +80,9 @@ diff --git a/nemo_rl/models/policy/workers/patches.py b/nemo_rl/models/policy/wo
 +
 +    module_name = "transformer_engine.pytorch.attention.dot_product_attention.utils"
 +    if module_name in sys.modules:
-+        importlib.reload(sys.modules[module_name])
++        module = sys.modules[module_name]
++        flash_attention_utils = module.FlashAttentionUtils
++        reloaded_module = importlib.reload(module)
++        # backends.py records package detection on this class at import time.
++        # Keep that state instead of replacing it with the reloaded defaults.
++        reloaded_module.FlashAttentionUtils = flash_attention_utils

@@ -488,11 +488,15 @@ if head_dim_qk > 192 and device_compute_capability not in ((8, 0), (9, 0), (10, 
         ):
             apply_transformer_engine_sm103_flash_attention_patch()
 
-    def test_patch_reloads_an_imported_utils_module(self, tmp_path):
+    def test_patch_reloads_an_imported_utils_module_without_losing_backend_state(
+        self, tmp_path
+    ):
         module_name = "transformer_engine.pytorch.attention.dot_product_attention.utils"
         dpa_utils_path = tmp_path / "utils.py"
         dpa_utils_path.write_text(self.PATCHED_CONTENT)
         fake_module = MagicMock()
+        detected_flash_attention_utils = fake_module.FlashAttentionUtils
+        reloaded_module = MagicMock()
 
         with (
             patch(
@@ -500,8 +504,11 @@ if head_dim_qk > 192 and device_compute_capability not in ((8, 0), (9, 0), (10, 
                 return_value=str(dpa_utils_path),
             ),
             patch.dict(sys.modules, {module_name: fake_module}),
-            patch("importlib.reload") as mock_reload,
+            patch("importlib.reload", return_value=reloaded_module) as mock_reload,
         ):
             apply_transformer_engine_sm103_flash_attention_patch()
 
         mock_reload.assert_called_once_with(fake_module)
+        assert (
+            reloaded_module.FlashAttentionUtils is detected_flash_attention_utils
+        )

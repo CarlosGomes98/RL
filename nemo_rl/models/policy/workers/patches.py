@@ -148,4 +148,9 @@ def apply_transformer_engine_sm103_flash_attention_patch() -> None:
 
     module_name = "transformer_engine.pytorch.attention.dot_product_attention.utils"
     if module_name in sys.modules:
-        importlib.reload(sys.modules[module_name])
+        module = sys.modules[module_name]
+        flash_attention_utils = module.FlashAttentionUtils
+        reloaded_module = importlib.reload(module)
+        # backends.py records package detection on this class at import time.
+        # Keep that state instead of replacing it with the reloaded defaults.
+        reloaded_module.FlashAttentionUtils = flash_attention_utils
