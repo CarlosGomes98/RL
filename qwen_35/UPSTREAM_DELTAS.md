@@ -491,9 +491,13 @@ optimization. `moe_enable_deepep` remains false because that deprecated switch
 selects the separate `deepep` flex backend and conflicts with `hybridep`.
 
 The Docker build verifies that the pinned package exposes `HybridEPBuffer` and
-that `hybrid_ep_cpp` is installed in the policy actor venv. Qualification still
-requires a distributed GB300 run because extension import alone cannot validate
-the EP32 communication path, topology, or training numerics.
+that `hybrid_ep_cpp` is installed in the policy actor venv. The source install
+sets `UV_NO_CONFIG=1` so NeMo-RL's project-level `match-runtime` resolver does
+not try to re-resolve Torch; `--no-build-isolation` instead compiles directly
+against the already pinned policy-venv Torch, and `--no-deps` prevents any
+dependency update. Qualification still requires a distributed GB300 run because
+extension import alone cannot validate the EP32 communication path, topology,
+or training numerics.
 
 ### Reviewed Engineer Fixes Not Carried
 

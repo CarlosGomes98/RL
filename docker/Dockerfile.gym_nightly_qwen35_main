@@ -48,6 +48,7 @@ HYBRID_EP_MULTINODE=0 \
 MAX_JOBS="${HYBRID_EP_MAX_JOBS}" \
 TORCH_CUDA_ARCH_LIST="${HYBRID_EP_CUDA_ARCH_LIST}" \
 USE_NIXL=0 \
+UV_NO_CONFIG=1 \
     uv pip install \
         --python "${POLICY_PYTHON}" \
         --no-build-isolation \
