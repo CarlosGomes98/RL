@@ -490,14 +490,16 @@ by loss, reward, and log-probability comparisons; it is not merely a performance
 optimization. `moe_enable_deepep` remains false because that deprecated switch
 selects the separate `deepep` flex backend and conflicts with `hybridep`.
 
-The Docker build verifies that the pinned package exposes `HybridEPBuffer` and
-that `hybrid_ep_cpp` is installed in the policy actor venv. The source install
-sets `UV_NO_CONFIG=1` so NeMo-RL's project-level `match-runtime` resolver does
-not try to re-resolve Torch; `--no-build-isolation` instead compiles directly
-against the already pinned policy-venv Torch, and `--no-deps` prevents any
-dependency update. Qualification still requires a distributed GB300 run because
-extension import alone cannot validate the EP32 communication path, topology,
-or training numerics.
+The Docker build verifies package metadata, the Python `HybridEPBuffer` export,
+and the presence of both `deep_ep_cpp` and `hybrid_ep_cpp` in the policy actor
+venv. It deliberately does not load the extensions during the build because the
+BuildKit sandbox does not expose the driver-provided `libcuda.so.1`; the GPU
+smoke performs that runtime import. The source install sets `UV_NO_CONFIG=1` so
+NeMo-RL's project-level `match-runtime` resolver does not try to re-resolve
+Torch; `--no-build-isolation` instead compiles directly against the already
+pinned policy-venv Torch, and `--no-deps` prevents any dependency update.
+Qualification still requires a distributed GB300 run because file checks cannot
+validate the EP32 communication path, topology, or training numerics.
 
 ### Reviewed Engineer Fixes Not Carried
 

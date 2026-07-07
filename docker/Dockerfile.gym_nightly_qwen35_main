@@ -59,16 +59,20 @@ UV_NO_CONFIG=1 \
 "${POLICY_PYTHON}" - <<'PY'
 import importlib.metadata as metadata
 import importlib.util
+from pathlib import Path
 
-import deep_ep
+specs = {}
+for module_name in ("deep_ep", "deep_ep_cpp", "hybrid_ep_cpp"):
+    spec = importlib.util.find_spec(module_name)
+    if spec is None or spec.origin is None:
+        raise SystemExit(f"{module_name} is unavailable")
+    specs[module_name] = spec
 
-if not hasattr(deep_ep, "HybridEPBuffer"):
-    raise SystemExit("deep_ep.HybridEPBuffer is unavailable")
-spec = importlib.util.find_spec("hybrid_ep_cpp")
-if spec is None or spec.origin is None:
-    raise SystemExit("hybrid_ep_cpp extension is unavailable")
+if "HybridEPBuffer" not in Path(specs["deep_ep"].origin).read_text():
+    raise SystemExit("deep_ep does not export HybridEPBuffer")
 print("deep-ep", metadata.version("deep-ep"))
-print("hybrid_ep_cpp", spec.origin)
+print("deep_ep_cpp", specs["deep_ep_cpp"].origin)
+print("hybrid_ep_cpp", specs["hybrid_ep_cpp"].origin)
 PY
 
 printf '%s\n' "${HYBRID_EP_REVISION}" > /opt/hybrid_ep_commit
