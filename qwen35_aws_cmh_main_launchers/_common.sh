@@ -25,7 +25,7 @@ RESULTS_ROOT="${RESULTS_ROOT:-${REPO_ROOT}/results}"
 LAUNCHER="${LAUNCHER:-${REPO_ROOT}/examples/nemo_gym/launch_qwen35_nemo_gym_multinode_training.sh}"
 
 export REPO_LOCATION="${REPO_LOCATION:-${REPO_ROOT}}"
-DEFAULT_QWEN35_CONTAINER_IMAGE_PATH="/lustre/fsw/portfolios/coreai/projects/coreai_mlperf_training/containers/dl+mlperf+optimized+nemo-rl-nightly-qwen35-ea7c4f9-aab88a31d.sqsh"
+DEFAULT_QWEN35_CONTAINER_IMAGE_PATH="/lustre/fsw/portfolios/coreai/projects/coreai_mlperf_training/containers/dl+mlperf+optimized+nemo-rl-nightly-qwen35-ea7c4f9-64ffa1ff7.sqsh"
 export CONTAINER_IMAGE_PATH="${QWEN35_CONTAINER_IMAGE_PATH:-${CONTAINER_IMAGE_PATH:-${DEFAULT_QWEN35_CONTAINER_IMAGE_PATH}}}"
 # The image contains the qualified Qwen source. Overlaying the whole host tree
 # can replace untouched nightly modules with incompatible branch-era versions.
@@ -58,8 +58,8 @@ QWEN35_ATTENTION_BACKEND="${QWEN35_ATTENTION_BACKEND:-flash}"
 BASELINE_OVERRIDES=(
     logger.wandb_enabled=False
     grpo.async_grpo.max_trajectory_age_steps=1
-    env.nemo_gym.swe_agents_train.responses_api_agents.swe_agents.concurrency=128
-    env.nemo_gym.swe_agents_val.responses_api_agents.swe_agents.concurrency=128
+    env.nemo_gym.swe_agents_train.responses_api_agents.swe_agents.concurrency=256
+    env.nemo_gym.swe_agents_val.responses_api_agents.swe_agents.concurrency=256
     # vLLM 0.20 can deadlock Qwen 3.5 multi-node decode with CUDA graphs.
     policy.generation.vllm_cfg.enforce_eager=True
     ++policy.megatron_cfg.attention_backend="${QWEN35_ATTENTION_BACKEND}"
