@@ -1,6 +1,6 @@
 # Qwen 3.5 Runtime Delta Audit
 
-Last updated: 2026-07-06
+Last updated: 2026-07-07
 
 This document records the code and build differences between the pinned upstream
 software in the Qwen 3.5 nightly base image and the image used for the current
@@ -329,6 +329,7 @@ registry digest recorded.
 | Gym transient HTTP disconnect retries are capped at 120 seconds by default | A dead vLLM engine fails affected rollouts instead of wedging collection forever; D3 then applies the configured failure policy |
 | Checkpointing saves every five steps and retains the expected convergence-window checkpoints | Supports restart across short Slurm windows; optimizer state remains disabled |
 | Host smoke launchers under `qwen35_aws_cmh_main_launchers/` | Host-only; not copied into the image |
+| Megatron policy actor rebuilds pinned HybridEP for `sm_100` and `sm_103`; the Qwen recipe selects the `flex/hybridep` dispatcher | Candidate dependency and numerical-path change; not qualified until a GB300 distributed smoke completes |
 
 ### Candidate D4 Replacement: Native vLLM MoE Refit
 
@@ -457,6 +458,42 @@ an incomplete event stream.
 The audited-image hashes above identify the `aab88a31d` candidate containing
 Candidate D13. The deleted D4 helper and patch remain listed above solely to
 describe historical artifacts where they were present.
+
+### Candidate D14: Build and Enable HybridEP on GB300
+
+| Field | Value |
+| --- | --- |
+| Upstream component | DeepEP `hybrid-ep` branch |
+| Revision | `e0a5b1d9848ab3e7b4a67842bf06f067bfac67f8` |
+| Target environment | `MegatronPolicyWorker` actor venv only |
+| CUDA architectures | `10.0;10.3` |
+| Config selection | `moe_token_dispatcher_type: flex`, `moe_flex_dispatcher_backend: hybridep` |
+| Status | Experimental; requires GB300 topology and one-step training qualification |
+
+The pinned nightly already contains DeepEP, but its ARM build predates the
+selected HybridEP revision and was compiled for `sm_90` and `sm_100` only. The
+candidate rebuilds the pinned HybridEP source with both GB200 and GB300 targets
+directly in the prebuilt Megatron policy actor environment. It does not replace
+the DeepEP installation used by vLLM or Gym.
+
+The build uses `HYBRID_EP_MULTINODE=0`. Qwen's EP32 process group is therefore
+required to remain within one NVLink domain. On four-GPU GB300 nodes this means
+eight nodes per EP group; the AWS launcher enforces the matching Slurm and Ray
+segment size. NeMo-RL's existing Megatron setup exports
+`NUM_OF_HYBRID_EP_RANKS_PER_NVLINK_DOMAIN=32` and `USE_MNNVL=1` from the EP
+configuration, so the Qwen recipe does not duplicate those values.
+
+HybridEP supports router probabilities in fp32. The recipe changes
+`moe_router_dtype` from fp64 to fp32 explicitly instead of relying on the
+dispatcher's implicit cast. This is a numerical-path change and must be covered
+by loss, reward, and log-probability comparisons; it is not merely a performance
+optimization. `moe_enable_deepep` remains false because that deprecated switch
+selects the separate `deepep` flex backend and conflicts with `hybridep`.
+
+The Docker build verifies that the pinned package exposes `HybridEPBuffer` and
+that `hybrid_ep_cpp` is installed in the policy actor venv. Qualification still
+requires a distributed GB300 run because extension import alone cannot validate
+the EP32 communication path, topology, or training numerics.
 
 ### Reviewed Engineer Fixes Not Carried
 

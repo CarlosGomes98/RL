@@ -115,12 +115,13 @@ policy:
     pipeline_dtype: ${policy.precision}
     sequence_parallel: true
     freeze_moe_router: true
-    moe_router_dtype: fp64
+    # HybridEP communicates router probabilities in fp32.
+    moe_router_dtype: fp32
     moe_router_load_balancing_type: none
     moe_router_bias_update_rate: 0.0
     moe_permute_fusion: false
     moe_enable_deepep: false
-    moe_token_dispatcher_type: alltoall
+    moe_token_dispatcher_type: flex
     moe_shared_expert_overlap: false
     moe_per_layer_logging: false
     gradient_accumulation_fusion: false
@@ -181,7 +182,7 @@ policy:
     first_last_layers_bf16: true
     num_layers_at_start_in_bf16: 1
     num_layers_at_end_in_bf16: 1
-    moe_flex_dispatcher_backend: alltoall
+    moe_flex_dispatcher_backend: hybridep
     moe_hybridep_num_sms: 32
   draft:
     enabled: false

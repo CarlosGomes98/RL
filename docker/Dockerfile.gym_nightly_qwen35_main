@@ -17,12 +17,61 @@ FROM ${BASE_IMAGE}
 ARG QWEN35_SOURCE_REF=unknown
 ARG NEMO_GYM_PREFETCH_CONFIGS=qwen_35/configs/grpo_qwen35_397b_swe_openhands_async.yaml
 ARG OPENHANDS_COMMIT=0d766ad06b2be64a42e6f0175b9ebcc4a06599d9
+ARG HYBRID_EP_REVISION=e0a5b1d9848ab3e7b4a67842bf06f067bfac67f8
+ARG HYBRID_EP_CUDA_ARCH_LIST="10.0;10.3"
+ARG HYBRID_EP_MAX_JOBS=16
 
 LABEL org.opencontainers.image.revision="${QWEN35_SOURCE_REF}"
 LABEL com.nvidia.nemo-rl.base="nvcr.io/nvidian/nemo-rl:ea7c4f9-56705042-gym"
+LABEL com.nvidia.hybrid-ep.revision="${HYBRID_EP_REVISION}"
 
 USER root
 WORKDIR /opt/nemo-rl
+
+# The nightly's ARM DeepEP pin predates the GB300 HybridEP fixes and was built
+# only for sm_90/sm_100. Rebuild the pinned HybridEP fork in the environment
+# used by MegatronPolicyWorker; vLLM keeps the nightly's separate DeepEP build.
+RUN <<"EOF" bash -exu -o pipefail
+POLICY_VENV=/opt/ray_venvs/nemo_rl.models.policy.workers.megatron_policy_worker.MegatronPolicyWorker
+POLICY_PYTHON="${POLICY_VENV}/bin/python"
+HYBRID_EP_SRC=$(mktemp -d)
+trap 'rm -rf "${HYBRID_EP_SRC}"' EXIT
+
+test -x "${POLICY_PYTHON}"
+git -C "${HYBRID_EP_SRC}" init
+git -C "${HYBRID_EP_SRC}" fetch --depth 1 \
+    https://github.com/deepseek-ai/DeepEP.git "${HYBRID_EP_REVISION}"
+git -C "${HYBRID_EP_SRC}" checkout --detach FETCH_HEAD
+test "$(git -C "${HYBRID_EP_SRC}" rev-parse HEAD)" = "${HYBRID_EP_REVISION}"
+
+HYBRID_EP_MULTINODE=0 \
+MAX_JOBS="${HYBRID_EP_MAX_JOBS}" \
+TORCH_CUDA_ARCH_LIST="${HYBRID_EP_CUDA_ARCH_LIST}" \
+USE_NIXL=0 \
+    uv pip install \
+        --python "${POLICY_PYTHON}" \
+        --no-build-isolation \
+        --no-deps \
+        --reinstall \
+        "${HYBRID_EP_SRC}"
+
+"${POLICY_PYTHON}" - <<'PY'
+import importlib.metadata as metadata
+import importlib.util
+
+import deep_ep
+
+if not hasattr(deep_ep, "HybridEPBuffer"):
+    raise SystemExit("deep_ep.HybridEPBuffer is unavailable")
+spec = importlib.util.find_spec("hybrid_ep_cpp")
+if spec is None or spec.origin is None:
+    raise SystemExit("hybrid_ep_cpp extension is unavailable")
+print("deep-ep", metadata.version("deep-ep"))
+print("hybrid_ep_cpp", spec.origin)
+PY
+
+printf '%s\n' "${HYBRID_EP_REVISION}" > /opt/hybrid_ep_commit
+EOF
 
 COPY qwen_35/ /opt/nemo-rl/qwen_35/
 COPY examples/nemo_gym/launch_qwen35_nemo_gym_multinode_training.sh \
