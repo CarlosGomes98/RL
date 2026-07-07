@@ -20,12 +20,12 @@ export SLURM_TIME="${SLURM_TIME:-01:00:00}"
 export TRAIN_NODES=16
 export GEN_NODES=48
 export NODES=64
-export QWEN35_ATTENTION_BACKEND=auto
+export QWEN35_ATTENTION_BACKEND=flash
 export VLLM_USE_RAY_V2_EXECUTOR_BACKEND=1
 
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
-submit_replicas coreai_mlperf_training-grpo.smoke1h-gbs512-16p48g-lr1p5e-6-valp2-steps10-ckpt7-tp4pp2cp1ep32-vllmtp4pp2ep4-cgraph-v2-packed-auto-noprefixcache-agentt1200-native-loader 1 \
+submit_replicas coreai_mlperf_training-grpo.smoke1h-gbs512-16p48g-lr1p5e-6-valp2-steps10-ckpt7-tp4pp2cp1ep32-vllmtp4pp2ep4-cgraph-v2-packed-flash-noprefixcache-agentt1200-native-loader 1 \
     grpo.num_prompts_per_step=32 \
     grpo.num_generations_per_prompt=16 \
     policy.train_global_batch_size=512 \
