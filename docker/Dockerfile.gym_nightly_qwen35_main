@@ -16,6 +16,7 @@ FROM ${BASE_IMAGE}
 
 ARG QWEN35_SOURCE_REF=unknown
 ARG NEMO_GYM_PREFETCH_CONFIGS=qwen_35/configs/grpo_qwen35_397b_swe_openhands_async.yaml
+ARG OPENHANDS_COMMIT=0d766ad06b2be64a42e6f0175b9ebcc4a06599d9
 
 LABEL org.opencontainers.image.revision="${QWEN35_SOURCE_REF}"
 LABEL com.nvidia.nemo-rl.base="nvcr.io/nvidian/nemo-rl:ea7c4f9-56705042-gym"
@@ -174,6 +175,31 @@ uv run --no-sync python -c \
 
 /opt/nemo-rl/3rdparty/Gym-workspace/Gym/responses_api_agents/swe_agents/swe_r2e_gym_setup/R2E-Gym/venv/bin/python \
     -c 'import docker, kubernetes, openai, r2egym, rich, yaml'
+
+python tools/generate_fingerprint.py > /opt/nemo_rl_container_fingerprint
+EOF
+
+# Keep the prebuilt OpenHands source and environment aligned with the commit
+# requested by the Qwen 3.5 Gym config. The nightly currently contains a newer
+# clean checkout, but per-rollout setup refuses to switch commits after the
+# evaluation harness has introduced tracked changes into its writable overlay.
+RUN <<"EOF" bash -exu -o pipefail
+SWE_AGENTS_DIR=/opt/nemo-rl/3rdparty/Gym-workspace/Gym/responses_api_agents/swe_agents
+SETUP_DIR="${SWE_AGENTS_DIR}/swe_openhands_setup"
+OPENHANDS_DIR="${SETUP_DIR}/OpenHands"
+
+SETUP_DIR="${SETUP_DIR}" \
+    MINIFORGE_DIR="${SETUP_DIR}/miniforge3" \
+    OPENHANDS_DIR="${OPENHANDS_DIR}" \
+    AGENT_FRAMEWORK_REPO="https://github.com/sdevare-nv/nv-OpenHands.git" \
+    AGENT_FRAMEWORK_COMMIT="${OPENHANDS_COMMIT}" \
+        "${SWE_AGENTS_DIR}/setup_scripts/openhands.sh"
+
+# Build tools may update tracked lockfiles. Runtime must start from the exact
+# configured source commit; ignored build products such as .venv are retained.
+git -C "${OPENHANDS_DIR}" reset --hard "${OPENHANDS_COMMIT}"
+test "$(git -C "${OPENHANDS_DIR}" rev-parse HEAD)" = "${OPENHANDS_COMMIT}"
+git -C "${OPENHANDS_DIR}" diff-index --quiet HEAD --
 
 python tools/generate_fingerprint.py > /opt/nemo_rl_container_fingerprint
 EOF
