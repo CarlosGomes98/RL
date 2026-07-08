@@ -1,6 +1,6 @@
 # Qwen 3.5 Runtime Delta Audit
 
-Last updated: 2026-07-07
+Last updated: 2026-07-08
 
 This document records the code and build differences between the pinned upstream
 software in the Qwen 3.5 nightly base image and the image used for the current
@@ -327,7 +327,8 @@ registry digest recorded.
 | The Qwen launcher uses baked source by default and supports an explicit host-source overlay | Audited runs use the image unchanged; set `NRL_SOURCE_OVERLAY=1` only for development against a compatible checkout |
 | The Gym config pins the baked OpenHands revision and tries both supported SIF layouts | Removes an environment-version ambiguity and supports both existing container directory structures |
 | Gym transient HTTP disconnect retries are capped at 120 seconds by default | A dead vLLM engine fails affected rollouts instead of wedging collection forever; D3 then applies the configured failure policy |
-| Checkpointing saves every five steps and retains the expected convergence-window checkpoints | Supports restart across short Slurm windows; optimizer state remains disabled |
+| Gym recovers interrupted per-trajectory metrics writes and replaces its own metrics files atomically | Prevents diagnostic JSON corruption after an agent timeout from aborting an otherwise recoverable rollout |
+| Checkpointing saves model and optimizer state every five steps and retains the expected convergence-window checkpoints | Supports exact training restart across short Slurm windows; requires a rebuilt image after the config change |
 | Host smoke launchers under `qwen35_aws_cmh_main_launchers/` | Host-only; not copied into the image |
 | Megatron policy actor rebuilds pinned HybridEP for `sm_100` and `sm_103`; the Qwen recipe selects the `flex/hybridep` dispatcher | Candidate dependency and numerical-path change; not qualified until a GB300 distributed smoke completes |
 
@@ -534,6 +535,31 @@ validation-only sampling values. Unmarked requests must still exactly match the
 training policy temperature and top-p, preserving the off-policy guard. A
 build-time round-trip assertion verifies that adding and removing the marker
 does not disturb existing chat-template metadata.
+
+### Candidate D16: Recover Interrupted Gym Metrics Writes
+
+| Field | Value |
+| --- | --- |
+| Upstream component | NeMo Gym |
+| Target | `responses_api_agents/swe_agents/app.py` |
+| Patch | `docker/gym/nightly-swe-agent-atomic-metrics.patch` |
+| Size | 16 insertions, 4 deletions |
+| Status | Required rollout-liveness fix; requires rebuilt-image smoke |
+
+AWS job `1408041` completed training through step 5, then aborted during the
+step-6 validation pass. An OpenHands process reached its 1200-second agent
+limit while its per-trajectory `nemo_gym_metrics.json` was being rewritten.
+The interrupted writer left a zero-byte file. Gym's next metrics update called
+`json.loads` on that file, raised `JSONDecodeError`, returned HTTP 500, and
+stopped the complete asynchronous rollout loop.
+
+The patch treats malformed per-trajectory metrics as lost diagnostics after the
+agent process has exited, rebuilds the file from the current authoritative
+update, and writes Gym updates through a same-directory temporary file followed
+by an atomic replacement. For this failure path, the authoritative updates
+remain `patch_exists: false` and `resolved: false`, so the timed-out trajectory
+keeps its normal zero reward. The patch does not change prompts, generated
+tokens, agent timeouts, verifier results, rewards, or masking policy.
 
 ### Reviewed Engineer Fixes Not Carried
 

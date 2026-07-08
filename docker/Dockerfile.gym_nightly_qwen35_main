@@ -90,6 +90,8 @@ COPY nemo_rl/algorithms/mlperf_grpo_logging.py \
 COPY docker/gym/qwen35-gym-vllm-model.patch /tmp/qwen35-gym-vllm-model.patch
 COPY docker/gym/nightly-swe-agent-apptainer-logs.patch \
     /tmp/nightly-swe-agent-apptainer-logs.patch
+COPY docker/gym/nightly-swe-agent-atomic-metrics.patch \
+    /tmp/nightly-swe-agent-atomic-metrics.patch
 COPY docker/gym/nightly-gym-bounded-transient-retries.patch \
     /tmp/nightly-gym-bounded-transient-retries.patch
 COPY docker/gym/qwen35-nightly-nemo-gym.patch \
@@ -115,6 +117,7 @@ cd /opt/nemo-rl/3rdparty/Gym-workspace/Gym
 for patch in \
     /tmp/qwen35-gym-vllm-model.patch \
     /tmp/nightly-swe-agent-apptainer-logs.patch \
+    /tmp/nightly-swe-agent-atomic-metrics.patch \
     /tmp/nightly-gym-bounded-transient-retries.patch; do
     if git apply --check "${patch}"; then
         git apply "${patch}"
@@ -128,6 +131,8 @@ done
 grep -F 'logs_dir.mkdir(parents=True, exist_ok=True)' \
     responses_api_agents/swe_agents/app.py
 grep -F 'NEMO_GYM_SWE_WORKSPACE_ROOT' \
+    responses_api_agents/swe_agents/app.py
+grep -F 'Rebuilding malformed metrics file' \
     responses_api_agents/swe_agents/app.py
 grep -F 'NEMO_GYM_TRANSIENT_RETRY_SECONDS' nemo_gym/server_utils.py
 python -m py_compile \
@@ -245,6 +250,23 @@ NEMO_GYM_SWE_SIF_DIR=/tmp/qwen35-sif \
 UV_LINK_MODE=copy \
     uv run python examples/nemo_gym/prefetch_venvs.py \
         ${NEMO_GYM_PREFETCH_CONFIGS}
+
+cd /opt/nemo-rl/3rdparty/Gym-workspace/Gym
+/opt/gym_venvs/responses_api_agents/swe_agents/.venv/bin/python - <<'PY'
+import json
+import tempfile
+from pathlib import Path
+
+from responses_api_agents.swe_agents.app import update_metrics
+
+with tempfile.TemporaryDirectory() as temp_dir:
+    metrics_path = Path(temp_dir) / "metrics.json"
+    metrics_path.write_text("")
+    update_metrics(metrics_path, {"patch_exists": False})
+    assert json.loads(metrics_path.read_text()) == {"patch_exists": False}
+    assert not list(metrics_path.parent.glob(".*.tmp"))
+PY
+cd /opt/nemo-rl
 
 uv pip install --python /opt/nemo_rl_venv/bin/python \
     'mlperf-common @ git+https://github.com/NVIDIA/mlperf-common.git@c02c93c0414071400a10716d9cd5cb8f668b78d4' \
