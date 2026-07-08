@@ -95,6 +95,8 @@ COPY docker/gym/nightly-gym-bounded-transient-retries.patch \
 COPY docker/gym/qwen35-nightly-nemo-gym.patch \
     /tmp/qwen35-nightly-nemo-gym.patch
 COPY docker/gym/qwen35-nightly-grpo.patch /tmp/qwen35-nightly-grpo.patch
+COPY docker/gym/nightly-qwen35-validation-generation.patch \
+    /tmp/nightly-qwen35-validation-generation.patch
 COPY docker/gym/nightly-qwen35-multiturn-prefix.patch \
     /tmp/nightly-qwen35-multiturn-prefix.patch
 COPY docker/gym/nightly-qwen35-nccl-timeout.patch \
@@ -142,7 +144,8 @@ for patch in \
     /tmp/nightly-qwen35-refit-split-experts.patch \
     /tmp/nightly-qwen35-te-sm103.patch \
     /tmp/qwen35-nightly-nemo-gym.patch \
-    /tmp/qwen35-nightly-grpo.patch; do
+    /tmp/qwen35-nightly-grpo.patch \
+    /tmp/nightly-qwen35-validation-generation.patch; do
     if git apply --check "${patch}"; then
         git apply "${patch}"
     elif git apply --reverse --check "${patch}"; then
@@ -158,6 +161,11 @@ grep -F '_qwen35_replace_prefix_from_suffix_messages' \
     nemo_rl/models/generation/vllm/vllm_worker_async.py
 grep -F 'openai_serving_render=openai_serving_render' \
     nemo_rl/models/generation/vllm/vllm_worker_async.py
+grep -F 'mark_validation_request=validation_generation_config is not None' \
+    nemo_rl/algorithms/grpo.py
+grep -F '_NEMO_RL_VALIDATION_REQUEST_TYPE' nemo_rl/experience/rollouts.py
+grep -F 'policy request temperature mismatch' \
+    nemo_rl/models/generation/vllm/vllm_worker_async.py
 grep -F 'NRL_REFIT_SPLIT_FUSED_EXPERTS' \
     nemo_rl/models/policy/workers/megatron_policy_worker.py
 grep -F 'NRL_NCCL_TIMEOUT_MINUTES' \
@@ -171,12 +179,16 @@ python -m py_compile \
     nemo_rl/algorithms/grpo.py \
     nemo_rl/algorithms/mlperf_grpo_logging.py \
     nemo_rl/environments/nemo_gym.py \
+    nemo_rl/experience/rollouts.py \
     nemo_rl/models/generation/vllm/vllm_backend.py \
     nemo_rl/models/generation/vllm/vllm_worker_async.py \
     nemo_rl/models/megatron/setup.py \
     nemo_rl/models/policy/workers/megatron_policy_worker.py \
     nemo_rl/models/policy/workers/patches.py
 python - <<'PY'
+import json
+
+from nemo_rl.experience.rollouts import _set_nemo_rl_request_type
 from nemo_rl.models.generation.vllm.vllm_worker_async import _replace_prefix_tokens
 
 
@@ -196,6 +208,23 @@ repaired = _replace_prefix_tokens(
     suffix_message_count=1,
 )
 assert repaired == [100, 101, 2, 20, 2, 30]
+
+responses_create_params = {
+    "metadata": {"chat_template_kwargs": json.dumps({"existing": True})}
+}
+_set_nemo_rl_request_type(responses_create_params, "validation")
+chat_template_kwargs = json.loads(
+    responses_create_params["metadata"]["chat_template_kwargs"]
+)
+assert chat_template_kwargs == {
+    "existing": True,
+    "_nemo_rl_request_type": "validation",
+}
+_set_nemo_rl_request_type(responses_create_params, None)
+chat_template_kwargs = json.loads(
+    responses_create_params["metadata"]["chat_template_kwargs"]
+)
+assert chat_template_kwargs == {"existing": True}
 PY
 EOF
 

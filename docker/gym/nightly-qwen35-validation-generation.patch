@@ -1,0 +1,186 @@
+diff --git a/nemo_rl/algorithms/grpo.py b/nemo_rl/algorithms/grpo.py
+--- a/nemo_rl/algorithms/grpo.py
++++ b/nemo_rl/algorithms/grpo.py
+@@ -3220,6 +3220,7 @@ def validate(
+                     max_rollout_turns=None,
+                     greedy=False,
+                     effort_config=_get_effort_config(master_config),
++                    mark_validation_request=validation_generation_config is not None,
+                 )
+                 val_batch = nemo_gym_rollout_result.final_batch
+                 gen_metrics = nemo_gym_rollout_result.rollout_metrics
+diff --git a/nemo_rl/experience/rollouts.py b/nemo_rl/experience/rollouts.py
+--- a/nemo_rl/experience/rollouts.py
++++ b/nemo_rl/experience/rollouts.py
+@@ -57,6 +57,54 @@ from nemo_rl.utils.timer import Timer
+-
++
+ TokenizerType = PreTrainedTokenizerBase
+-
++
++_NEMO_RL_REQUEST_TYPE_METADATA_KEY = "_nemo_rl_request_type"
++_NEMO_RL_VALIDATION_REQUEST_TYPE = "validation"
++_NEMO_GYM_CHAT_TEMPLATE_KWARGS_METADATA_KEY = "chat_template_kwargs"
++
++
++def _get_nemo_gym_chat_template_kwargs(metadata: dict[str, Any]) -> dict[str, Any]:
++    chat_template_kwargs_str = metadata.get(
++        _NEMO_GYM_CHAT_TEMPLATE_KWARGS_METADATA_KEY, "{}"
++    )
++    assert isinstance(chat_template_kwargs_str, str), (
++        "NeMo-Gym responses_create_params.metadata.chat_template_kwargs must be a JSON string."
++    )
++
++    chat_template_kwargs = json.loads(chat_template_kwargs_str)
++    assert isinstance(chat_template_kwargs, dict), (
++        "NeMo-Gym responses_create_params.metadata.chat_template_kwargs must decode to a dict."
++    )
++    return chat_template_kwargs
++
++
++def _set_nemo_rl_request_type(
++    responses_create_params: dict[str, Any], request_type: str | None
++) -> None:
++    metadata = responses_create_params.get("metadata") or {}
++    assert isinstance(metadata, dict), (
++        "NeMo-Gym responses_create_params.metadata must be a dict."
++    )
++    metadata = dict(metadata)
++    metadata.pop(_NEMO_RL_REQUEST_TYPE_METADATA_KEY, None)
++
++    chat_template_kwargs = _get_nemo_gym_chat_template_kwargs(metadata)
++    if request_type is None:
++        chat_template_kwargs.pop(_NEMO_RL_REQUEST_TYPE_METADATA_KEY, None)
++    else:
++        chat_template_kwargs[_NEMO_RL_REQUEST_TYPE_METADATA_KEY] = request_type
++
++    if chat_template_kwargs:
++        metadata[_NEMO_GYM_CHAT_TEMPLATE_KWARGS_METADATA_KEY] = json.dumps(
++            chat_template_kwargs
++        )
++    else:
++        metadata.pop(_NEMO_GYM_CHAT_TEMPLATE_KWARGS_METADATA_KEY, None)
++
++    if metadata:
++        responses_create_params["metadata"] = metadata
++    else:
++        responses_create_params.pop("metadata", None)
++
+-
++
+ def _add_r3_fallback_metrics(
+     gen_metrics: dict[str, float | int],
+@@ -1343,6 +1391,7 @@ def run_async_nemo_gym_rollout(
+     max_rollout_turns: Optional[int] = None,
+     greedy: bool = False,
+     effort_config: Optional[EffortLevelsConfig] = None,
++    mark_validation_request: bool = False,
+ ) -> AsyncNemoGymRolloutResult:
+     """Run multi-turn rollouts with NeMo-Gym. Please refer to the `run_async_multi_turn_rollout` docs for more information on the parameters."""
+     # We accept max_seq_len for API parity with the other rollout paths, but NeMo-Gym
+@@ -1393,6 +1442,13 @@ def run_async_nemo_gym_rollout(
+         responses_create_params["temperature"] = generation_config["temperature"]
+         responses_create_params["top_p"] = generation_config["top_p"]
+-
++
++        if mark_validation_request:
++            _set_nemo_rl_request_type(
++                responses_create_params, _NEMO_RL_VALIDATION_REQUEST_TYPE
++            )
++        else:
++            _set_nemo_rl_request_type(responses_create_params, None)
++
+         # Configure max_output_tokens to respect the max_new_tokens setting.
+         # Will clamp max_output_tokens in vllm_worker_async.py so that input + output <= max_seq_len
+         existing_max_output_tokens = responses_create_params.get("max_output_tokens")
+diff --git a/nemo_rl/models/generation/vllm/vllm_worker_async.py b/nemo_rl/models/generation/vllm/vllm_worker_async.py
+--- a/nemo_rl/models/generation/vllm/vllm_worker_async.py
++++ b/nemo_rl/models/generation/vllm/vllm_worker_async.py
+@@ -49,6 +49,10 @@ from nemo_rl.models.generation.vllm.vllm_worker import BaseVllmGenerationWorker
+-
++
+ LOGGER = logging.getLogger(__name__)
+-
++
++_NEMO_RL_REQUEST_TYPE_METADATA_KEY = "_nemo_rl_request_type"
++_NEMO_RL_VALIDATION_REQUEST_TYPE = "validation"
++_NEMO_RL_VALIDATION_GENERATION_CONFIG_KEY = "_validation_generation"
++
+-
++
+ def _first_token_mismatch(left: list[int], right: list[int]) -> Optional[int]:
+     compare_len = min(len(left), len(right))
+@@ -864,6 +868,45 @@ class VllmAsyncGenerationWorkerImpl(BaseVllmGenerationWorker):
+-
++
+         generation_config = self.cfg
+-
++
++        def _pop_nemo_rl_request_type(request) -> Optional[str]:
++            chat_template_kwargs = getattr(request, "chat_template_kwargs", None) or {}
++            assert isinstance(chat_template_kwargs, dict), (
++                "Chat completion request chat_template_kwargs must be a dict."
++            )
++
++            request_type = chat_template_kwargs.pop(
++                _NEMO_RL_REQUEST_TYPE_METADATA_KEY, None
++            )
++            if request_type is not None:
++                request.chat_template_kwargs = chat_template_kwargs
++            return request_type
++
++        def _is_validation_request(request) -> bool:
++            request_type = _pop_nemo_rl_request_type(request)
++            if request_type is not None:
++                assert request_type == _NEMO_RL_VALIDATION_REQUEST_TYPE, (
++                    f"Unsupported NeMo RL request type: {request_type!r}."
++                )
++                return True
++
++            validation_generation = generation_config.get(
++                _NEMO_RL_VALIDATION_GENERATION_CONFIG_KEY
++            )
++            if validation_generation is None:
++                return False
++
++            if (
++                validation_generation["temperature"] == generation_config["temperature"]
++                and validation_generation["top_p"] == generation_config["top_p"]
++            ):
++                return False
++
++            request_top_p = 1.0 if request.top_p is None else request.top_p
++            return (
++                request.temperature == validation_generation["temperature"]
++                and request_top_p == validation_generation["top_p"]
++            )
++
+         # The create_chat_completion and tokenize methods are taken from vllm/entrypoints/openai/api_server.py
+         @app.post("/v1/chat/completions")
+         async def create_chat_completion(
+@@ -878,10 +921,19 @@ class VllmAsyncGenerationWorkerImpl(BaseVllmGenerationWorker):
+             )
+             request.top_k = -1
+-
++
+-            # The request sampling params need to exactly match those as are set in NeMo RL.
+-            # If they do not match, the inference will be off policy and destroy training stability.
+-            assert request.temperature == generation_config["temperature"]
+-            assert request.top_p == generation_config["top_p"]
++            # Training requests must match the NeMo RL policy config. Validation
++            # requests are metric-only and may use validation_generation params.
++            if not _is_validation_request(request):
++                expected_temperature = generation_config["temperature"]
++                expected_top_p = generation_config["top_p"]
++                assert request.temperature == expected_temperature, (
++                    f"policy request temperature mismatch: got {request.temperature}, "
++                    f"expected {expected_temperature}."
++                )
++                assert request.top_p == expected_top_p, (
++                    f"policy request top_p mismatch: got {request.top_p}, "
++                    f"expected {expected_top_p}."
++                )
+-
++
+             try:
+                 generator = await openai_serving_chat.create_chat_completion(

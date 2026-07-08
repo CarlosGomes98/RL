@@ -507,6 +507,34 @@ therefore adds that venv's `torch/lib` directory to `LD_LIBRARY_PATH` through
 `policy.megatron_cfg.env_vars`. This is scoped to Megatron policy actors; vLLM,
 Gym, and the driver retain the nightly's original library search path.
 
+### Candidate D15: Preserve Deterministic Validation Request Classification
+
+| Field | Value |
+| --- | --- |
+| Upstream source | NeMo-RL commit `224ea3efb5425723caf132c25d0e7a6fe501c0f8` |
+| Runtime files | `grpo.py`, `experience/rollouts.py`, `vllm_worker_async.py` |
+| Training sampling | Unchanged; exact configured temperature and top-p remain enforced |
+| Validation sampling | Explicitly marked metric-only requests may use `grpo.validation_generation` |
+| Status | Implemented; requires rebuilt-image validation smoke |
+
+The nightly packaging retained the GRPO-side deterministic validation override
+but omitted its matching request-classification path. In AWS job `1370079`, all
+256 requests in each of two validation passes used temperature 0 while the
+vLLM worker expected the training temperature of 1. Every request therefore
+failed its off-policy assertion and Gym converted all 512 HTTP failures into
+masked zero-reward trajectories. The reported validation accuracy of zero was
+not a model-quality result. Training requests were unaffected and produced
+nonzero rewards through the saved step-5 checkpoint.
+
+This candidate ports the original three-part protocol rather than weakening the
+worker assertion globally. GRPO marks validation calls; the rollout layer
+transports that marker in the existing JSON `chat_template_kwargs` metadata;
+and the worker removes the marker before prompt rendering and permits the
+validation-only sampling values. Unmarked requests must still exactly match the
+training policy temperature and top-p, preserving the off-policy guard. A
+build-time round-trip assertion verifies that adding and removing the marker
+does not disturb existing chat-template metadata.
+
 ### Reviewed Engineer Fixes Not Carried
 
 The comparison also included fixes from `mfutrega/mlperf-training-qwen35-main`.
