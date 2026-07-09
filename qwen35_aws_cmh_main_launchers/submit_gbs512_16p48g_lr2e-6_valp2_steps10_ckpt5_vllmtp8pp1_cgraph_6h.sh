@@ -25,7 +25,7 @@ export VLLM_USE_RAY_V2_EXECUTOR_BACKEND=0
 
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
-submit_replicas coreai_mlperf_training-grpo.veridian-gbs512-16p48g-lr1p25e-6-valp2-steps10-ckpt5-tp4pp2cp1ep32-vllmtp8pp1ep8-raydag-cgraph-packed-flash-noprefixcache-agentt1200-native-loader 1 \
+submit_replicas coreai_mlperf_training-grpo.veridian-gbs512-16p48g-lr2e-6-valp2-steps10-ckpt5-tp4pp2cp1ep32-vllmtp8pp1ep8-raydag-cgraph-packed-flash-noprefixcache-agentt1200-native-loader 1 \
     grpo.num_prompts_per_step=32 \
     grpo.num_generations_per_prompt=16 \
     policy.train_global_batch_size=512 \
@@ -49,7 +49,8 @@ submit_replicas coreai_mlperf_training-grpo.veridian-gbs512-16p48g-lr1p25e-6-val
     grpo.val_period=2 \
     grpo.val_at_start=False \
     grpo.val_at_end=False \
-    policy.megatron_cfg.optimizer.lr=1.25e-6 \
-    policy.megatron_cfg.optimizer.min_lr=1.25e-6 \
+    policy.megatron_cfg.optimizer.lr=2e-6 \
+    policy.megatron_cfg.optimizer.min_lr=2e-6 \
     checkpointing.enabled=True \
+    checkpointing.save_optimizer=True \
     checkpointing.save_period=5
