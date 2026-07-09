@@ -25,7 +25,7 @@ export VLLM_USE_RAY_V2_EXECUTOR_BACKEND=0
 
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
-submit_replicas coreai_mlperf_training-grpo.smoke1h-gbs512-16p48g-lr1p25e-6-1step-tp4pp2cp1ep32-hybridep-vllmtp8pp1ep8-raydag-cgraph-packed-flash-noprefixcache-agentt1200-native-loader 1 \
+submit_replicas coreai_mlperf_training-grpo.smoke1h-veridian-gbs512-16p48g-lr1p25e-6-1step-tp4pp2cp1ep32-hybridep-vllmtp8pp1ep8-raydag-cgraph-packed-flash-noprefixcache-agentt1200-native-loader 1 \
     grpo.num_prompts_per_step=32 \
     grpo.num_generations_per_prompt=16 \
     policy.train_global_batch_size=512 \

@@ -309,8 +309,8 @@ env:
           # Match the OpenHands revision baked into the Gym image.
           agent_framework_commit: 0d766ad06b2be64a42e6f0175b9ebcc4a06599d9
           agent_prompt_overrides:
-          - user_prompt_template: responses_api_agents/swe_agents/prompts/openhands/user_prompt.j2
-            system_prompt_template: responses_api_agents/swe_agents/prompts/openhands/system_prompt.j2
+          - user_prompt_template: responses_api_agents/swe_agents/prompts/openhands_sdk/veridian_user_prompt.j2
+            system_prompt_template: responses_api_agents/swe_agents/prompts/openhands_sdk/system_prompt.j2
             agent_cls: CodeActAgent
             diversify_tool_names: false
           agent_max_turns: 30
@@ -326,6 +326,11 @@ env:
       responses_api_agents:
         swe_agents:
           agent_framework_commit: ${env.nemo_gym.swe_agents_train.responses_api_agents.swe_agents.agent_framework_commit}
+          agent_prompt_overrides:
+          - user_prompt_template: responses_api_agents/swe_agents/prompts/openhands_sdk/veridian_user_prompt.j2
+            system_prompt_template: responses_api_agents/swe_agents/prompts/openhands_sdk/system_prompt.j2
+            agent_cls: CodeActAgent
+            diversify_tool_names: false
           agent_max_turns: 30
           swebench_agent_timeout: 1200
           swebench_tests_timeout: 180

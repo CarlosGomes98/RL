@@ -328,6 +328,7 @@ registry digest recorded.
 | The Gym config pins the baked OpenHands revision and tries both supported SIF layouts | Removes an environment-version ambiguity and supports both existing container directory structures |
 | Gym transient HTTP disconnect retries are capped at 120 seconds by default | A dead vLLM engine fails affected rollouts instead of wedging collection forever; D3 then applies the configured failure policy |
 | Gym recovers interrupted per-trajectory metrics writes and replaces its own metrics files atomically | Prevents diagnostic JSON corruption after an agent timeout from aborting an otherwise recoverable rollout |
+| Train and validation use the Veridian OpenHands SDK prompt pair from Gym commit `d517139a9dfda6b8ddce0588e10e0574a4a2ea8c` | Deliberate experiment changing the agent prompt contract; requires a distinct image and result series |
 | Checkpointing saves model and optimizer state every five steps and retains the expected convergence-window checkpoints | Supports exact training restart across short Slurm windows; requires a rebuilt image after the config change |
 | Host smoke launchers under `qwen35_aws_cmh_main_launchers/` | Host-only; not copied into the image |
 | Megatron policy actor rebuilds pinned HybridEP for `sm_100` and `sm_103`; the Qwen recipe selects the `flex/hybridep` dispatcher | Candidate dependency and numerical-path change; not qualified until a GB300 distributed smoke completes |
@@ -560,6 +561,24 @@ by an atomic replacement. For this failure path, the authoritative updates
 remain `patch_exists: false` and `resolved: false`, so the timed-out trajectory
 keeps its normal zero reward. The patch does not change prompts, generated
 tokens, agent timeouts, verifier results, rewards, or masking policy.
+
+### Candidate D17: Use the Veridian OpenHands SDK Prompts
+
+| Field | Value |
+| --- | --- |
+| Upstream component | NeMo Gym |
+| Targets | `responses_api_agents/swe_agents/prompts/openhands_sdk/system_prompt.j2`; `responses_api_agents/swe_agents/prompts/openhands_sdk/veridian_user_prompt.j2` |
+| Source | `jpiotrowski/nemo-gym` commit `d517139a9dfda6b8ddce0588e10e0574a4a2ea8c` |
+| Integration reference | `dl/mlperf/grpo-studies` commit `3a1373ec48d0977b9dfe93de3080479b791e44ff` |
+| SHA-256 | System prompt `392dd6401a0e6333f16baf735b18d1c96b94782dc79b7521f92de3eaa43045b8`; user prompt `93d1058e4aba4a4f5a5c6124e75d97943487d6660e0062bb67cdf8d3338d5401` |
+| Status | Experimental prompt change; requires separate convergence results |
+
+The Dockerfile copies the two templates verbatim into the pinned Gym prompt
+directory. The Qwen config selects the pair explicitly for both training and
+validation while retaining `CodeActAgent`, the pinned OpenHands revision,
+timeouts, tool naming, datasets, verifier, and reward path. This change can
+alter generated trajectories and therefore remains isolated on the Veridian
+branch and in separately named runs.
 
 ### Reviewed Engineer Fixes Not Carried
 
