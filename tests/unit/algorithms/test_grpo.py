@@ -25,6 +25,7 @@ from nemo_rl.algorithms.advantage_estimator import (
     ReinforcePlusPlusAdvantageEstimator,
 )
 from nemo_rl.algorithms.grpo import (
+    _calculate_observed_pass_metrics,
     _default_grpo_save_state,
     add_grpo_token_loss_masks_and_generation_logprobs,
     aggregate_rollout_metrics,
@@ -1972,6 +1973,47 @@ def test_reinforce_plus_plus_global_normalization():
 # ============================================================================
 
 
+class TestObservedPassMetrics:
+    """Tests for prompt-grouped observed pass metrics."""
+
+    def test_calculates_average_any_and_all_pass_rates(self):
+        metrics = _calculate_observed_pass_metrics(
+            [1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0],
+            num_val_generations_per_prompt=4,
+        )
+
+        assert metrics == pytest.approx(
+            {
+                "avg_pass@1": 5 / 12,
+                "pass@4": 2 / 3,
+                "pass^4": 1 / 3,
+            }
+        )
+
+    def test_empty_rewards_return_zero_metrics(self):
+        metrics = _calculate_observed_pass_metrics([], num_val_generations_per_prompt=4)
+
+        assert metrics == {
+            "avg_pass@1": 0.0,
+            "pass@4": 0.0,
+            "pass^4": 0.0,
+        }
+
+    @pytest.mark.parametrize(
+        ("rewards", "generations", "message"),
+        [
+            ([1.0], 0, "must be >= 1"),
+            ([1.0, 0.0, 1.0], 2, "must be divisible"),
+        ],
+    )
+    def test_rejects_invalid_grouping(self, rewards, generations, message):
+        with pytest.raises(ValueError, match=message):
+            _calculate_observed_pass_metrics(
+                rewards,
+                num_val_generations_per_prompt=generations,
+            )
+
+
 class TestValidateFunction:
     """Tests for the validate() function."""
 
@@ -2184,6 +2226,90 @@ class TestValidateFunction:
         # Verify metrics are returned correctly
         assert "accuracy" in val_metrics
         assert "avg_length" in val_metrics
+
+    def test_validate_repeats_prompts_and_reports_pass_metrics(self):
+        mock_policy_gen = MagicMock()
+        mock_tokenizer = MagicMock()
+        mock_tokenizer.pad_token_id = 0
+        mock_batch = BatchedDataDict[DatumSpec](
+            {
+                "message_log": [
+                    [
+                        {
+                            "role": "user",
+                            "content": "test1",
+                            "token_ids": torch.tensor([1]),
+                        }
+                    ],
+                    [
+                        {
+                            "role": "user",
+                            "content": "test2",
+                            "token_ids": torch.tensor([2]),
+                        }
+                    ],
+                ],
+                "task_name": ["math", "math"],
+                "extra_env_info": [{}, {}],
+                "loss_multiplier": torch.ones(2),
+                "idx": torch.tensor([0, 1]),
+                "total_reward": torch.zeros(2),
+            }
+        )
+        mock_dataloader = MagicMock(spec=StatefulDataLoader)
+        mock_dataloader.__iter__ = MagicMock(return_value=iter([mock_batch]))
+        mock_config = {
+            "grpo": {
+                "max_val_samples": 2,
+                "val_batch_size": 2,
+                "max_rollout_turns": 1,
+                "num_val_generations_per_prompt": 2,
+            },
+            "policy": {
+                "max_total_sequence_length": 2048,
+                "generation": {
+                    "temperature": 1.0,
+                    "top_p": 1.0,
+                    "top_k": None,
+                    "backend": "vllm",
+                    "colocated": {"enabled": True},
+                    "vllm_cfg": {"async_engine": False},
+                },
+            },
+            "logger": {"num_val_samples_to_print": 2},
+        }
+
+        def rollout_with_grouped_rewards(_policy, batch, *_args, **_kwargs):
+            assert batch["idx"].tolist() == [0, 0, 1, 1]
+            batch["total_reward"] = torch.tensor([1.0, 0.0, 1.0, 1.0])
+            return batch, {"mean_gen_tokens_per_sample": 10.0}
+
+        with (
+            patch(
+                "nemo_rl.algorithms.grpo.run_multi_turn_rollout",
+                side_effect=rollout_with_grouped_rewards,
+            ),
+            patch("nemo_rl.algorithms.grpo._should_use_nemo_gym", return_value=False),
+            patch(
+                "nemo_rl.algorithms.grpo._should_use_async_rollouts",
+                return_value=False,
+            ),
+            patch("nemo_rl.algorithms.grpo.print_message_log_samples"),
+        ):
+            val_metrics, _ = validate(
+                mock_policy_gen,
+                mock_dataloader,
+                mock_tokenizer,
+                {"math": MagicMock(spec=EnvironmentInterface)},
+                step=5,
+                master_config=mock_config,
+                logger=None,
+            )
+
+        assert val_metrics["accuracy"] == pytest.approx(0.75)
+        assert val_metrics["avg_pass@1"] == pytest.approx(0.75)
+        assert val_metrics["pass@2"] == pytest.approx(1.0)
+        assert val_metrics["pass^2"] == pytest.approx(0.5)
 
     def test_validate_returns_empty_when_no_dataloader(self):
         """Test that validate returns empty dicts when no dataloader is provided."""

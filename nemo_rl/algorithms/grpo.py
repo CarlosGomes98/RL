@@ -160,6 +160,9 @@ class GRPOConfig(TypedDict):
     val_at_end: bool
     max_val_samples: int
     validation_generation: NotRequired[ValidationGenerationConfig | None]
+    # Number of generations sampled for each validation prompt. A value greater
+    # than one enables avg_pass@1, pass@N, and pass^N validation metrics.
+    # Recommended default: 1.
     num_val_generations_per_prompt: NotRequired[int]
     skip_reference_policy_logprobs_calculation: NotRequired[bool]
     seed: int
@@ -225,18 +228,35 @@ class MasterConfig(TypedDict):
     checkpointing: CheckpointingConfig
 
 
-def _calculate_observed_pass_at_k(
+def _calculate_observed_pass_metrics(
     total_rewards: list[float], num_val_generations_per_prompt: int
-) -> float:
-    if not total_rewards:
-        return 0.0
+) -> dict[str, float]:
+    """Calculate observed pass metrics from prompt-grouped validation rewards."""
+    if num_val_generations_per_prompt < 1:
+        raise ValueError("grpo.num_val_generations_per_prompt must be >= 1")
 
     rewards_t = torch.tensor(total_rewards, dtype=torch.float32)
-    assert rewards_t.numel() % num_val_generations_per_prompt == 0, (
-        "Validation rewards must be divisible by grpo.num_val_generations_per_prompt"
-    )
+    if rewards_t.numel() % num_val_generations_per_prompt != 0:
+        raise ValueError(
+            "Validation rewards must be divisible by "
+            "grpo.num_val_generations_per_prompt"
+        )
+
+    metric_suffix = str(num_val_generations_per_prompt)
+    if not total_rewards:
+        return {
+            "avg_pass@1": 0.0,
+            f"pass@{metric_suffix}": 0.0,
+            f"pass^{metric_suffix}": 0.0,
+        }
+
     rewards_per_prompt = rewards_t.view(-1, num_val_generations_per_prompt)
-    return (rewards_per_prompt > 0).any(dim=1).float().mean().item()
+    passed_per_prompt = rewards_per_prompt > 0
+    return {
+        "avg_pass@1": passed_per_prompt.float().mean().item(),
+        f"pass@{metric_suffix}": passed_per_prompt.any(dim=1).float().mean().item(),
+        f"pass^{metric_suffix}": passed_per_prompt.all(dim=1).float().mean().item(),
+    }
 
 
 # ===============================================================================
@@ -2539,6 +2559,8 @@ def validate(
         num_val_generations_per_prompt = int(
             master_config["grpo"].get("num_val_generations_per_prompt", 1)
         )
+        if num_val_generations_per_prompt < 1:
+            raise ValueError("grpo.num_val_generations_per_prompt must be >= 1")
 
         total_rewards = []
         total_lengths = []
@@ -2561,9 +2583,7 @@ def validate(
                 break
 
             if num_val_generations_per_prompt > 1:
-                val_batch = val_batch.repeat_interleave(
-                    num_val_generations_per_prompt
-                )
+                val_batch = val_batch.repeat_interleave(num_val_generations_per_prompt)
 
             # Generate responses (updates the LLMMessageLogType in batch_with_msg_logs)
             # Use async rollouts if vLLM async engine is enabled
@@ -2641,12 +2661,13 @@ def validate(
             "accuracy": accuracy,
             "avg_length": avg_length,
         }
+        pass_metrics: dict[str, float] = {}
         if num_val_generations_per_prompt > 1:
-            pass_metric_name = f"pass@{num_val_generations_per_prompt}"
-            val_metrics[pass_metric_name] = _calculate_observed_pass_at_k(
+            pass_metrics = _calculate_observed_pass_metrics(
                 total_rewards,
                 num_val_generations_per_prompt,
             )
+            val_metrics.update(pass_metrics)
         val_metrics.update(additional_metrics_to_report)
 
         # Print sample conversations only once at the end of validation
@@ -2671,8 +2692,8 @@ def validate(
     # Print summary of validation results
     print("\n📊 Validation Results:")
     print(f"    • Accuracy: {accuracy:.4f}")
-    if num_val_generations_per_prompt > 1:
-        print(f"    • {pass_metric_name}: {val_metrics[pass_metric_name]:.4f}")
+    for metric_name, metric_value in pass_metrics.items():
+        print(f"    • {metric_name}: {metric_value:.4f}")
     print(f"    • Average response length: {avg_length:.1f} tokens")
     print(f"    • Samples processed: {len(total_rewards)}", flush=True)
 

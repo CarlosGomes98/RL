@@ -20,6 +20,7 @@ grpo:
   overlong_filtering: true
   max_val_samples: null
   val_batch_size: null
+  num_val_generations_per_prompt: 1
   validation_generation:
     temperature: 0.0
     top_p: 1.0
