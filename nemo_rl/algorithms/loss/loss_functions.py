@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any, NotRequired, Optional, TypedDict, TypeVar
+from typing import Any, Literal, NotRequired, Optional, TypedDict, TypeVar
 
 import torch
 from pydantic import BaseModel
@@ -161,6 +161,13 @@ class ClippedPGLossConfig(BaseModel, extra="allow"):
     # L = L_PPO + μ·L_NLL(correct)   (arXiv:2504.05118, Eq. 10)
     # Set to 0 to disable.
     positive_example_nll_weight: float = 0.0
+    # Diagnostic metrics are useful for monitoring, but are not needed for
+    # the objective. ``full`` preserves the historical metric surface;
+    # ``minimal`` keeps only objective/importance-sampling bookkeeping.
+    metrics_level: Literal["full", "minimal"] = "full"
+    # Compile the tensor-only actor objective when supported by the active
+    # backend. The eager implementation remains the default path.
+    enable_torch_compile: bool = False
 
 
 class ClippedPGLossDataDict(TypedDict):
@@ -174,6 +181,56 @@ class ClippedPGLossDataDict(TypedDict):
     token_mask: torch.Tensor
     sample_mask: torch.Tensor
     __extra__: Any
+
+
+def _clipped_pg_actor_terms(
+    curr_logprobs: torch.Tensor,
+    prev_logprobs: torch.Tensor,
+    advantages: torch.Tensor,
+    token_mask: torch.Tensor,
+    ratio_clip_min: float,
+    ratio_clip_max: float,
+    ratio_clip_c: float,
+    disable_ppo_ratio: bool,
+    force_on_policy_ratio: bool,
+    sequence_level_importance_ratios: bool,
+    use_cispo: bool,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Tensor-only actor objective terms suitable for ``torch.compile``."""
+    if force_on_policy_ratio:
+        log_ratios = curr_logprobs - curr_logprobs.detach()
+        ratios = log_ratios.exp()
+        ratios_clamped = ratios
+    elif not disable_ppo_ratio:
+        log_ratios = curr_logprobs - prev_logprobs
+        if sequence_level_importance_ratios:
+            seq_log_ratio_mean = masked_mean(
+                log_ratios, token_mask, dim=-1
+            ).unsqueeze(-1)
+            ratios = seq_log_ratio_mean.exp().expand(-1, advantages.shape[1])
+        else:
+            ratios = log_ratios.exp()
+        ratios_clamped = ratios.clamp(
+            1.0 - ratio_clip_min, 1.0 + ratio_clip_max
+        )
+    else:
+        ratios = curr_logprobs
+        ratios_clamped = curr_logprobs
+
+    if use_cispo:
+        clip_loss = -advantages * ratios_clamped.detach() * curr_logprobs
+    else:
+        clip_loss = torch.maximum(
+            -advantages * ratios, -advantages * ratios_clamped
+        )
+
+    if ratio_clip_c > 0:
+        loss3 = -advantages * ratio_clip_c
+        clip_loss = torch.where(
+            advantages < 0, torch.minimum(clip_loss, loss3), clip_loss
+        )
+
+    return ratios, ratios_clamped, clip_loss
 
 
 class ClippedPGLossFn(LossFunction):
@@ -236,6 +293,11 @@ class ClippedPGLossFn(LossFunction):
         self.ratio_clip_min = cfg.ratio_clip_min
         self.ratio_clip_max = cfg.ratio_clip_max
         self.ratio_clip_c = cfg.ratio_clip_c  # set to None to disable dual-clipping
+        if self.ratio_clip_c is not None:
+            assert self.ratio_clip_c > 1, (
+                "ratio_clip_c must exceed 1 representing a lower bound of the ratios, "
+                f"got {self.ratio_clip_c}."
+            )
         self.reference_policy_kl_penalty = (
             cfg.reference_policy_kl_penalty if not cfg.use_kl_in_reward else 0
         )
@@ -258,6 +320,13 @@ class ClippedPGLossFn(LossFunction):
         # Whether to compute importance weights per-sequence instead of per-token.
         self.sequence_level_importance_ratios = cfg.sequence_level_importance_ratios
         self.positive_example_nll_weight = cfg.positive_example_nll_weight
+        self.metrics_level = cfg.metrics_level
+        self.enable_torch_compile = cfg.enable_torch_compile
+        self._compiled_actor_terms = (
+            torch.compile(_clipped_pg_actor_terms, dynamic=True, fullgraph=True)
+            if self.enable_torch_compile
+            else None
+        )
         self.loss_type = (
             LossType.TOKEN_LEVEL if cfg.token_level_loss else LossType.SEQUENCE_LEVEL
         )
@@ -361,6 +430,23 @@ class ClippedPGLossFn(LossFunction):
             "probs_ratio_clamped_min": MetricNormalizer.NONE,
             "probs_ratio_clamped_max": MetricNormalizer.NONE,
         }
+        if self.metrics_level == "minimal":
+            for name in (
+                "probs_ratio",
+                "probs_ratio_clamped",
+                "token_mult_prob_error",
+                "gen_kl_error",
+                "policy_kl_error",
+                "js_divergence_error",
+                "approx_entropy",
+                "probs_ratio_min",
+                "probs_ratio_max",
+                "probs_ratio_clamped_min",
+                "probs_ratio_clamped_max",
+            ):
+                self.metric_normalizations.pop(name)
+            if not self.use_importance_sampling_correction:
+                self.metric_normalizations.pop("sampling_importance_ratio")
         if self.truncated_importance_sampling_type is not None:
             # Keyed on the TIS type, NOT loss_type: seq-mask-tis masks whole
             # sequences (÷ global_valid_seqs); tis/icepop are token-level.
@@ -400,69 +486,61 @@ class ClippedPGLossFn(LossFunction):
         if self.force_on_policy_ratio:
             prev_logprobs = curr_logprobs.detach()
 
-        # token_mult_prob_error
-        # See more details and other metrics in docs/guides/grpo.md#metrics
-        lp_error = torch.abs(generation_logprobs - prev_logprobs)  # noqa: F841  (precommit ignore for now)
-        # average over all tokens in the microbatch
-        mult_prob_error = masked_mean(
-            torch.exp(lp_error * mask),
-            mask,
-            global_normalization_factor=global_valid_toks,
-        ).item()
+        if self.metrics_level == "full":
+            # These diagnostics do not contribute to the objective. Keep
+            # them out of the minimal path so their elementwise kernels are
+            # not launched during every training microbatch.
+            # See docs/guides/grpo.md#metrics for their definitions.
+            lp_error = torch.abs(generation_logprobs - prev_logprobs)
+            mult_prob_error = masked_mean(
+                torch.exp(lp_error * mask),
+                mask,
+                global_normalization_factor=global_valid_toks,
+            )
 
-        # gen-kl: kl(P_gen || P_train)
-        # where log_ratio = prev_logprobs - generation_logprobs
-        gen_kl_error = calculate_kl(
-            logprobs=generation_logprobs,
-            logprobs_reference=prev_logprobs,
-            kl_type=self.reference_policy_kl_type,
-            input_clamp_value=None,
-            output_clamp_value=None,
-        )
-        gen_kl_error = masked_mean(
-            gen_kl_error,
-            mask,
-            global_normalization_factor=global_valid_toks,
-        ).item()
+            gen_kl_error = masked_mean(
+                calculate_kl(
+                    logprobs=generation_logprobs,
+                    logprobs_reference=prev_logprobs,
+                    kl_type=self.reference_policy_kl_type,
+                    input_clamp_value=None,
+                    output_clamp_value=None,
+                ),
+                mask,
+                global_normalization_factor=global_valid_toks,
+            )
 
-        # policy-kl: kl(P_train || P_gen)
-        # where log_ratio = generation_logprobs - prev_logprobs
-        policy_kl_error = calculate_kl(
-            logprobs=prev_logprobs,
-            logprobs_reference=generation_logprobs,
-            kl_type=self.reference_policy_kl_type,
-            input_clamp_value=None,
-            output_clamp_value=None,
-        )
-        policy_kl_error = masked_mean(
-            policy_kl_error,
-            mask,
-            global_normalization_factor=global_valid_toks,
-        ).item()
+            policy_kl_error = masked_mean(
+                calculate_kl(
+                    logprobs=prev_logprobs,
+                    logprobs_reference=generation_logprobs,
+                    kl_type=self.reference_policy_kl_type,
+                    input_clamp_value=None,
+                    output_clamp_value=None,
+                ),
+                mask,
+                global_normalization_factor=global_valid_toks,
+            )
 
-        # Jensen-Shannon divergence
-        # M = 0.5 * (P_train + P_gen)
-        # JSD = 0.5 * KL(P_train || M) + 0.5 * KL(P_gen || M)
-        log_mixture = torch.log(
-            0.5 * torch.exp(prev_logprobs) + 0.5 * torch.exp(generation_logprobs)
-        )
-        # KL(P_train || M)
-        kl_prev_to_mixture = (
-            torch.exp(prev_logprobs - log_mixture) - (prev_logprobs - log_mixture) - 1
-        )
-
-        # KL(P_gen || M)
-        kl_gen_to_mixture = (
-            torch.exp(generation_logprobs - log_mixture)
-            - (generation_logprobs - log_mixture)
-            - 1
-        )
-
-        js_divergence_error = masked_mean(
-            0.5 * kl_prev_to_mixture + 0.5 * kl_gen_to_mixture,
-            mask,
-            global_normalization_factor=global_valid_toks,
-        ).item()
+            log_mixture = torch.log(
+                0.5 * torch.exp(prev_logprobs)
+                + 0.5 * torch.exp(generation_logprobs)
+            )
+            kl_prev_to_mixture = (
+                torch.exp(prev_logprobs - log_mixture)
+                - (prev_logprobs - log_mixture)
+                - 1
+            )
+            kl_gen_to_mixture = (
+                torch.exp(generation_logprobs - log_mixture)
+                - (generation_logprobs - log_mixture)
+                - 1
+            )
+            js_divergence_error = masked_mean(
+                0.5 * kl_prev_to_mixture + 0.5 * kl_gen_to_mixture,
+                mask,
+                global_normalization_factor=global_valid_toks,
+            )
 
         # Calculate KL regularization.
         if self.reference_policy_kl_penalty != 0:
@@ -513,58 +591,38 @@ class ClippedPGLossFn(LossFunction):
                     global_normalization_factor=global_valid_seqs,
                 )
         else:
-            kl = torch.tensor(0.0)
+            kl = curr_logprobs.new_zeros(())
 
-        # Calculate clipped loss function if ppo ratio is enabled.
-        if self.force_on_policy_ratio:
-            # Force ratio to 1.0 for truly on-policy behavior
-            # Use curr_logprobs twice so ratio=1 but gradients still flow
-            log_ratios = curr_logprobs - curr_logprobs.detach()
-            ratios = log_ratios.exp()  # = exp(0) = 1.0, but depends on curr_logprobs
-            ratios_clamped = ratios
-        elif not self.disable_ppo_ratio:
-            log_ratios = curr_logprobs - prev_logprobs
-            if self.sequence_level_importance_ratios:
-                seq_log_ratio_mean = masked_mean(
-                    log_ratios,
-                    token_mask,
-                    dim=-1,
-                ).unsqueeze(-1)
-                seq_ratio = seq_log_ratio_mean.exp()
-                ratios = seq_ratio.repeat(1, advantages.shape[1])
-            else:
-                ratios = log_ratios.exp()
-            ratios_clamped = ratios.clamp(
-                1.0 - self.ratio_clip_min, 1.0 + self.ratio_clip_max
-            )
-        else:
-            ratios = curr_logprobs
-            ratios_clamped = curr_logprobs
-
-        if self.use_cispo:
-            clip_loss = -advantages * ratios_clamped.detach() * curr_logprobs
-        else:
-            loss1 = -advantages * ratios
-            loss2 = -advantages * ratios_clamped
-
-            # Determine which value to use for clipping (max for pessimistic estimate)
-            clip_loss = torch.max(loss1, loss2)
-        # Dual-clipping see https://arxiv.org/pdf/1912.09729
-        if self.ratio_clip_c is not None:
-            assert self.ratio_clip_c > 1, (
-                f"ratio_clip_c must exceed 1 representing a lower bound of the ratios, got {self.ratio_clip_c}."
-            )
-            loss3 = -advantages * self.ratio_clip_c
-            clip_loss = torch.where(
-                advantages < 0, torch.min(clip_loss, loss3), clip_loss
-            )
+        # Calculate clipped loss function. The tensor-only helper is compiled
+        # when requested; its eager implementation is otherwise identical.
+        actor_terms = self._compiled_actor_terms or _clipped_pg_actor_terms
+        ratios, ratios_clamped, clip_loss = actor_terms(
+            curr_logprobs,
+            prev_logprobs,
+            advantages,
+            token_mask,
+            self.ratio_clip_min,
+            self.ratio_clip_max,
+            self.ratio_clip_c if self.ratio_clip_c is not None else -1.0,
+            self.disable_ppo_ratio,
+            self.force_on_policy_ratio,
+            self.sequence_level_importance_ratios,
+            self.use_cispo,
+        )
 
         # -------------------------------------------------------------
         # Off-policy (actor) importance-sampling correction
         # -------------------------------------------------------------
         _is_filter_metrics: dict = {}  # populated for icepop / seq-mask-tis
         # See: docs/guides/grpo.md#importance-sampling-correction
-        if self.sequence_level_importance_ratios:
+        if (
+            self.metrics_level == "minimal"
+            and not self.use_importance_sampling_correction
+        ):
+            # No objective or emitted metric needs the actor/generation
+            # importance weights in this mode.
+            actor_importance_weights_expanded = None
+        elif self.sequence_level_importance_ratios:
             # importance weight w_i = exp(Σ_t (log π_actor − log π_behaviour))
             seq_lp_diff = ((prev_logprobs - generation_logprobs) * mask).sum(dim=-1)
             actor_importance_weights = torch.exp(seq_lp_diff).detach()
@@ -606,7 +664,7 @@ class ClippedPGLossFn(LossFunction):
                         token_oob_mask.float(),
                         mask,
                         global_normalization_factor=global_valid_toks,
-                    ).item(),
+                    ),
                 }
                 actor_importance_weights_expanded = torch.clamp(
                     actor_importance_weights_expanded,
@@ -626,7 +684,7 @@ class ClippedPGLossFn(LossFunction):
                         (~token_kept_mask).float(),
                         mask,
                         global_normalization_factor=global_valid_toks,
-                    ).item(),
+                    ),
                 }
                 actor_importance_weights_expanded = torch.where(
                     token_kept_mask,
@@ -657,7 +715,7 @@ class ClippedPGLossFn(LossFunction):
                         1.0 - seq_kept_mask,
                         sample_mask,
                         global_normalization_factor=global_valid_seqs,
-                    ).item(),
+                    ),
                 }
                 actor_importance_weights_expanded = (
                     actor_importance_weights_expanded * seq_kept_mask.unsqueeze(-1)
@@ -672,18 +730,26 @@ class ClippedPGLossFn(LossFunction):
         if self.use_importance_sampling_correction:
             importance_weights_to_use = actor_importance_weights
         else:
-            importance_weights_to_use = torch.ones_like(prev_logprobs)
+            importance_weights_to_use = None
 
         if self.loss_type == LossType.TOKEN_LEVEL:
+            actor_values = (
+                clip_loss
+                if importance_weights_to_use is None
+                else importance_weights_to_use * clip_loss
+            )
             actor_loss = masked_mean(
-                importance_weights_to_use * clip_loss,
-                mask,
-                global_normalization_factor=global_valid_toks,
+                actor_values, mask, global_normalization_factor=global_valid_toks
             )
         else:
+            actor_values = (
+                clip_loss
+                if importance_weights_to_use is None
+                else importance_weights_to_use * clip_loss
+            )
             actor_loss = masked_mean(
                 masked_mean(
-                    importance_weights_to_use * clip_loss,
+                    actor_values,
                     token_mask,
                     dim=-1,
                 ),
@@ -693,98 +759,133 @@ class ClippedPGLossFn(LossFunction):
 
         # Metric: sampling importance ratio (mean over samples)
         # See: docs/guides/grpo.md#sampling-importance-ratio
-        if self.sequence_level_importance_ratios:
-            sample_importance_ratio = masked_mean(
-                actor_importance_weights,
-                sample_mask,
-                global_normalization_factor=global_valid_seqs,
-            )
-        else:
-            sample_importance_ratio = masked_mean(
-                actor_importance_weights,
-                mask,
-                global_normalization_factor=global_valid_toks,
-            )
+        if self.metrics_level == "full":
+            if self.sequence_level_importance_ratios:
+                sample_importance_ratio = masked_mean(
+                    actor_importance_weights,
+                    sample_mask,
+                    global_normalization_factor=global_valid_seqs,
+                )
+            else:
+                sample_importance_ratio = masked_mean(
+                    actor_importance_weights,
+                    mask,
+                    global_normalization_factor=global_valid_toks,
+                )
 
         # Approximating entropy as E_{s ~ \pi_{gen}(s)}[-(\pi_{curr}/\pi_{gen})log(\pi_{curr}(s))]
         # See more details and other metrics in docs/guides/grpo.md#metrics
-        with torch.no_grad():
-            seq_entropy_approx = -masked_mean(
-                torch.exp(curr_logprobs - generation_logprobs) * curr_logprobs,
-                mask,
-                global_normalization_factor=global_valid_toks,
-            )
+        if self.metrics_level == "full":
+            with torch.no_grad():
+                seq_entropy_approx = -masked_mean(
+                    torch.exp(curr_logprobs - generation_logprobs) * curr_logprobs,
+                    mask,
+                    global_normalization_factor=global_valid_toks,
+                )
 
         # -----------------------------------------------------------------
         # VAPO: positive-example NLL loss on correct samples (reward > 0)
         # L = L_PPO + μ · L_NLL(correct)
         # -----------------------------------------------------------------
-        nll_loss = torch.tensor(0.0, device=mask.device)
+        nll_loss = curr_logprobs.new_zeros(())
         if self.positive_example_nll_weight > 0 and "rewards" in data:
             correct_sample_mask = (data["rewards"] > 0).float()  # [batch]
             correct_mask = mask * correct_sample_mask.unsqueeze(-1)
             correct_valid_toks = correct_mask.sum()
-            if correct_valid_toks > 0:
-                nll_loss = masked_mean(
+            nll_loss = torch.where(
+                correct_valid_toks > 0,
+                masked_mean(
                     -curr_logprobs,
                     correct_mask,
                     global_normalization_factor=correct_valid_toks,
-                )
+                ),
+                curr_logprobs.new_zeros(()),
+            )
 
         loss = actor_loss + kl + self.positive_example_nll_weight * nll_loss
-        with torch.no_grad():
-            probs_ratio = masked_mean(
-                ratios.detach(),
-                mask,
-                global_normalization_factor=global_valid_toks,
-            ).item()
-            probs_ratio_clamped = masked_mean(
-                ratios_clamped.detach(),
-                mask,
-                global_normalization_factor=global_valid_toks,
-            ).item()
+        # Keep all reductions on device and perform one scalar materialization
+        # for the Python-facing metric dictionary. This avoids a synchronization
+        # for every individual metric while preserving the historical values.
+        metric_names: list[str] = ["loss"]
+        metric_tensors: list[torch.Tensor] = [loss.detach()]
 
-            # Calculate min/max values for ratios (only for valid tokens)
-            masked_ratios = ratios.detach()[mask.bool()]
-            masked_ratios_clamped = ratios_clamped.detach()[mask.bool()]
+        def add_metric(name: str, value: torch.Tensor) -> None:
+            metric_names.append(name)
+            metric_tensors.append(value.detach().to(dtype=loss.dtype).reshape(()))
 
-            # Handle edge case where there might be no valid tokens
-            if masked_ratios.numel() > 0:
-                probs_ratio_min = masked_ratios.min().item()
-                probs_ratio_max = masked_ratios.max().item()
-                probs_ratio_clamped_min = masked_ratios_clamped.min().item()
-                probs_ratio_clamped_max = masked_ratios_clamped.max().item()
+        if self.metrics_level == "full":
+            with torch.no_grad():
+                add_metric(
+                    "probs_ratio",
+                    masked_mean(
+                        ratios,
+                        mask,
+                        global_normalization_factor=global_valid_toks,
+                    ),
+                )
+                add_metric(
+                    "probs_ratio_clamped",
+                    masked_mean(
+                        ratios_clamped,
+                        mask,
+                        global_normalization_factor=global_valid_toks,
+                    ),
+                )
+
+                valid_mask = mask.bool()
+                inf = torch.full_like(ratios, float("inf"))
+                neg_inf = torch.full_like(ratios, float("-inf"))
+                add_metric(
+                    "probs_ratio_min", torch.where(valid_mask, ratios, inf).min()
+                )
+                add_metric(
+                    "probs_ratio_max", torch.where(valid_mask, ratios, neg_inf).max()
+                )
+                add_metric(
+                    "probs_ratio_clamped_min",
+                    torch.where(valid_mask, ratios_clamped, inf).min(),
+                )
+                add_metric(
+                    "probs_ratio_clamped_max",
+                    torch.where(valid_mask, ratios_clamped, neg_inf).max(),
+                )
+                add_metric("token_mult_prob_error", mult_prob_error)
+                add_metric("gen_kl_error", gen_kl_error)
+                add_metric("policy_kl_error", policy_kl_error)
+                add_metric("js_divergence_error", js_divergence_error)
+                add_metric("sampling_importance_ratio", sample_importance_ratio)
+                add_metric(
+                    "approx_entropy",
+                    seq_entropy_approx,
+                )
+        elif self.use_importance_sampling_correction:
+            if self.sequence_level_importance_ratios:
+                sample_importance_ratio = masked_mean(
+                    actor_importance_weights,
+                    sample_mask,
+                    global_normalization_factor=global_valid_seqs,
+                )
             else:
-                probs_ratio_min = float("inf")
-                probs_ratio_max = float("-inf")
-                probs_ratio_clamped_min = float("inf")
-                probs_ratio_clamped_max = float("-inf")
+                sample_importance_ratio = masked_mean(
+                    actor_importance_weights,
+                    mask,
+                    global_normalization_factor=global_valid_toks,
+                )
+            add_metric("sampling_importance_ratio", sample_importance_ratio)
 
-        # If you provided a global_valid_{seqs/toks}, all metrics here are globally normalized
-        # by either sequence or token count, depending on particular metric.
-        # To get the true metric, you'll need to sum over the microbatch.
-        return (
-            loss,
-            {
-                "loss": loss.item(),
-                "probs_ratio": probs_ratio,
-                "probs_ratio_clamped": probs_ratio_clamped,
-                "probs_ratio_min": probs_ratio_min,
-                "probs_ratio_max": probs_ratio_max,
-                "probs_ratio_clamped_min": probs_ratio_clamped_min,
-                "probs_ratio_clamped_max": probs_ratio_clamped_max,
-                "kl_penalty": kl.item() / self.reference_policy_kl_penalty if kl else 0,
-                "token_mult_prob_error": mult_prob_error,
-                "gen_kl_error": gen_kl_error,
-                "policy_kl_error": policy_kl_error,
-                "js_divergence_error": js_divergence_error,
-                "sampling_importance_ratio": sample_importance_ratio.item(),
-                "num_valid_samples": sample_mask.sum().item(),
-                "approx_entropy": seq_entropy_approx.item(),
-                **_is_filter_metrics,
-                "positive_nll_loss": nll_loss.item(),
-            },
-        )
+        if self.reference_policy_kl_penalty != 0:
+            add_metric(
+                "kl_penalty", kl / self.reference_policy_kl_penalty
+            )
+        else:
+            add_metric("kl_penalty", curr_logprobs.new_zeros(()))
+        add_metric("num_valid_samples", sample_mask.sum())
+        add_metric("positive_nll_loss", nll_loss)
+        for name, value in _is_filter_metrics.items():
+            add_metric(name, value)
+
+        metric_values = torch.stack(metric_tensors).cpu().tolist()
+        return loss, dict(zip(metric_names, metric_values))
 
 
 class NLLLossFn(LossFunction):

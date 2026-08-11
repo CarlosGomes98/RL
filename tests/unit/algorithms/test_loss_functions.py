@@ -2764,6 +2764,49 @@ class TestMetricNormalizationAdvertisement:
         assert norms["num_unmasked_tokens"] is MetricNormalizer.NONE
         assert norms["num_valid_samples"] is MetricNormalizer.NONE
 
+    def test_minimal_metrics_preserve_loss_and_drop_diagnostics(self):
+        data, batch_size, seq_len, _ = _setup_clipped_pg_test_data(
+            batch_size=2, seq_len=6, device="cpu"
+        )
+        data["advantages"] = torch.randn(batch_size, seq_len)
+        data["prev_logprobs"] = -torch.rand(batch_size, seq_len)
+        data["generation_logprobs"] = -torch.rand(batch_size, seq_len)
+        curr_logprobs = -torch.rand(batch_size, seq_len - 1)
+        global_valid_seqs = data["sample_mask"].sum().float()
+        global_valid_toks = (
+            data["token_mask"][:, 1:] * data["sample_mask"].unsqueeze(-1)
+        ).sum().float()
+
+        full_loss, full_metrics = ClippedPGLossFn(
+            ClippedPGLossConfig(reference_policy_kl_penalty=0.0)
+        )(
+            curr_logprobs,
+            data,
+            global_valid_seqs,
+            global_valid_toks,
+        )
+        minimal_loss, minimal_metrics = ClippedPGLossFn(
+            ClippedPGLossConfig(
+                reference_policy_kl_penalty=0.0,
+                metrics_level="minimal",
+            )
+        )(
+            curr_logprobs,
+            data,
+            global_valid_seqs,
+            global_valid_toks,
+        )
+
+        torch.testing.assert_close(full_loss, minimal_loss)
+        assert "gen_kl_error" in full_metrics
+        assert "gen_kl_error" not in minimal_metrics
+        assert set(minimal_metrics) == {
+            "loss",
+            "kl_penalty",
+            "num_valid_samples",
+            "positive_nll_loss",
+        }
+
 
 def test_split_rescale_matches_sync_normalization():
     """Metric parity of split-API rescale vs sync normalization.
