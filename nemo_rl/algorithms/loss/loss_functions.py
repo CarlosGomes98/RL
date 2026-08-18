@@ -233,6 +233,63 @@ def _clipped_pg_actor_terms(
     return ratios, ratios_clamped, clip_loss
 
 
+def _clipped_pg_actor_objective(
+    curr_logprobs: torch.Tensor,
+    prev_logprobs: torch.Tensor,
+    advantages: torch.Tensor,
+    token_mask: torch.Tensor,
+    mask: torch.Tensor,
+    sample_mask: torch.Tensor,
+    importance_weights: Optional[torch.Tensor],
+    global_valid_toks: torch.Tensor,
+    global_valid_seqs: torch.Tensor,
+    ratio_clip_min: float,
+    ratio_clip_max: float,
+    ratio_clip_c: float,
+    disable_ppo_ratio: bool,
+    force_on_policy_ratio: bool,
+    sequence_level_importance_ratios: bool,
+    use_cispo: bool,
+    token_level_loss: bool,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Actor objective (ratio/clip terms + masked-mean reduction) in one region.
+
+    Folding the elementwise clipped-PG terms and the reduction into a single
+    function lets ``torch.compile`` fuse the reduction with its producers. This
+    is the compute-heavy, launch-bound part of the loss; keeping it as one unit
+    is what makes compilation worthwhile (the elementwise-only helper is too
+    small to fuse). Returns the scalar actor loss plus ``ratios``/
+    ``ratios_clamped`` for the diagnostic metrics computed by the caller.
+    """
+    ratios, ratios_clamped, clip_loss = _clipped_pg_actor_terms(
+        curr_logprobs,
+        prev_logprobs,
+        advantages,
+        token_mask,
+        ratio_clip_min,
+        ratio_clip_max,
+        ratio_clip_c,
+        disable_ppo_ratio,
+        force_on_policy_ratio,
+        sequence_level_importance_ratios,
+        use_cispo,
+    )
+    actor_values = (
+        clip_loss if importance_weights is None else importance_weights * clip_loss
+    )
+    if token_level_loss:
+        actor_loss = masked_mean(
+            actor_values, mask, global_normalization_factor=global_valid_toks
+        )
+    else:
+        actor_loss = masked_mean(
+            masked_mean(actor_values, token_mask, dim=-1),
+            sample_mask,
+            global_normalization_factor=global_valid_seqs,
+        )
+    return actor_loss, ratios, ratios_clamped
+
+
 class ClippedPGLossFn(LossFunction):
     """Generalized Clipped Policy Gradient loss function w/ KL regularization.
 
@@ -322,8 +379,21 @@ class ClippedPGLossFn(LossFunction):
         self.positive_example_nll_weight = cfg.positive_example_nll_weight
         self.metrics_level = cfg.metrics_level
         self.enable_torch_compile = cfg.enable_torch_compile
-        self._compiled_actor_terms = (
-            torch.compile(_clipped_pg_actor_terms, dynamic=True, fullgraph=True)
+        # Compile the actor objective (ratio/clip terms + masked-mean reduction).
+        # ``max-autotune-no-cudagraphs`` is required, not cosmetic: under
+        # ``dynamic=True`` (needed to avoid recompiling on every rollout shape),
+        # the default Inductor heuristic emits a pathological reduction schedule
+        # for the both-dims-symbolic masked-mean that can run >20x slower than
+        # eager at long sequence lengths. Autotuning searches block sizes and
+        # recovers a good kernel. CUDA graphs are disabled because they are
+        # unstable here and conflict with the trailing host sync in ``__call__``.
+        self._compiled_actor_objective = (
+            torch.compile(
+                _clipped_pg_actor_objective,
+                dynamic=True,
+                fullgraph=True,
+                mode="max-autotune-no-cudagraphs",
+            )
             if self.enable_torch_compile
             else None
         )
@@ -593,22 +663,11 @@ class ClippedPGLossFn(LossFunction):
         else:
             kl = curr_logprobs.new_zeros(())
 
-        # Calculate clipped loss function. The tensor-only helper is compiled
-        # when requested; its eager implementation is otherwise identical.
-        actor_terms = self._compiled_actor_terms or _clipped_pg_actor_terms
-        ratios, ratios_clamped, clip_loss = actor_terms(
-            curr_logprobs,
-            prev_logprobs,
-            advantages,
-            token_mask,
-            self.ratio_clip_min,
-            self.ratio_clip_max,
-            self.ratio_clip_c if self.ratio_clip_c is not None else -1.0,
-            self.disable_ppo_ratio,
-            self.force_on_policy_ratio,
-            self.sequence_level_importance_ratios,
-            self.use_cispo,
-        )
+        # The clipped-PG actor objective is assembled after the importance
+        # weights below, so the ratio/clip terms and the masked-mean reduction
+        # can be fused into a single (optionally compiled) region. The actor
+        # terms do not depend on the importance-sampling correction, so this
+        # reordering is numerically identical to computing them earlier.
 
         # -------------------------------------------------------------
         # Off-policy (actor) importance-sampling correction
@@ -732,30 +791,30 @@ class ClippedPGLossFn(LossFunction):
         else:
             importance_weights_to_use = None
 
-        if self.loss_type == LossType.TOKEN_LEVEL:
-            actor_values = (
-                clip_loss
-                if importance_weights_to_use is None
-                else importance_weights_to_use * clip_loss
-            )
-            actor_loss = masked_mean(
-                actor_values, mask, global_normalization_factor=global_valid_toks
-            )
-        else:
-            actor_values = (
-                clip_loss
-                if importance_weights_to_use is None
-                else importance_weights_to_use * clip_loss
-            )
-            actor_loss = masked_mean(
-                masked_mean(
-                    actor_values,
-                    token_mask,
-                    dim=-1,
-                ),
-                sample_mask,
-                global_normalization_factor=global_valid_seqs,
-            )
+        # Actor objective: ratio/clip terms + masked-mean reduction, fused into
+        # one region and compiled when requested (eager path is identical).
+        actor_objective = (
+            self._compiled_actor_objective or _clipped_pg_actor_objective
+        )
+        actor_loss, ratios, ratios_clamped = actor_objective(
+            curr_logprobs,
+            prev_logprobs,
+            advantages,
+            token_mask,
+            mask,
+            sample_mask,
+            importance_weights_to_use,
+            global_valid_toks,
+            global_valid_seqs,
+            self.ratio_clip_min,
+            self.ratio_clip_max,
+            self.ratio_clip_c if self.ratio_clip_c is not None else -1.0,
+            self.disable_ppo_ratio,
+            self.force_on_policy_ratio,
+            self.sequence_level_importance_ratios,
+            self.use_cispo,
+            self.loss_type == LossType.TOKEN_LEVEL,
+        )
 
         # Metric: sampling importance ratio (mean over samples)
         # See: docs/guides/grpo.md#sampling-importance-ratio
