@@ -185,6 +185,7 @@ class ClippedPGLossDataDict(TypedDict):
 
 def _clipped_pg_actor_terms(
     curr_logprobs: torch.Tensor,
+    *,
     prev_logprobs: torch.Tensor,
     advantages: torch.Tensor,
     token_mask: torch.Tensor,
@@ -235,6 +236,7 @@ def _clipped_pg_actor_terms(
 
 def _clipped_pg_actor_objective(
     curr_logprobs: torch.Tensor,
+    *,
     prev_logprobs: torch.Tensor,
     advantages: torch.Tensor,
     token_mask: torch.Tensor,
@@ -263,16 +265,16 @@ def _clipped_pg_actor_objective(
     """
     ratios, ratios_clamped, clip_loss = _clipped_pg_actor_terms(
         curr_logprobs,
-        prev_logprobs,
-        advantages,
-        token_mask,
-        ratio_clip_min,
-        ratio_clip_max,
-        ratio_clip_c,
-        disable_ppo_ratio,
-        force_on_policy_ratio,
-        sequence_level_importance_ratios,
-        use_cispo,
+        prev_logprobs=prev_logprobs,
+        advantages=advantages,
+        token_mask=token_mask,
+        ratio_clip_min=ratio_clip_min,
+        ratio_clip_max=ratio_clip_max,
+        ratio_clip_c=ratio_clip_c,
+        disable_ppo_ratio=disable_ppo_ratio,
+        force_on_policy_ratio=force_on_policy_ratio,
+        sequence_level_importance_ratios=sequence_level_importance_ratios,
+        use_cispo=use_cispo,
     )
     actor_values = (
         clip_loss if importance_weights is None else importance_weights * clip_loss
@@ -798,22 +800,22 @@ class ClippedPGLossFn(LossFunction):
         )
         actor_loss, ratios, ratios_clamped = actor_objective(
             curr_logprobs,
-            prev_logprobs,
-            advantages,
-            token_mask,
-            mask,
-            sample_mask,
-            importance_weights_to_use,
-            global_valid_toks,
-            global_valid_seqs,
-            self.ratio_clip_min,
-            self.ratio_clip_max,
-            self.ratio_clip_c if self.ratio_clip_c is not None else -1.0,
-            self.disable_ppo_ratio,
-            self.force_on_policy_ratio,
-            self.sequence_level_importance_ratios,
-            self.use_cispo,
-            self.loss_type == LossType.TOKEN_LEVEL,
+            prev_logprobs=prev_logprobs,
+            advantages=advantages,
+            token_mask=token_mask,
+            mask=mask,
+            sample_mask=sample_mask,
+            importance_weights=importance_weights_to_use,
+            global_valid_toks=global_valid_toks,
+            global_valid_seqs=global_valid_seqs,
+            ratio_clip_min=self.ratio_clip_min,
+            ratio_clip_max=self.ratio_clip_max,
+            ratio_clip_c=(self.ratio_clip_c if self.ratio_clip_c is not None else -1.0),
+            disable_ppo_ratio=self.disable_ppo_ratio,
+            force_on_policy_ratio=self.force_on_policy_ratio,
+            sequence_level_importance_ratios=self.sequence_level_importance_ratios,
+            use_cispo=self.use_cispo,
+            token_level_loss=self.loss_type == LossType.TOKEN_LEVEL,
         )
 
         # Metric: sampling importance ratio (mean over samples)
@@ -821,7 +823,7 @@ class ClippedPGLossFn(LossFunction):
         if self.metrics_level == "full":
             if self.sequence_level_importance_ratios:
                 sample_importance_ratio = masked_mean(
-                    actor_importance_weights,
+                    actor_importance_weights.squeeze(-1),
                     sample_mask,
                     global_normalization_factor=global_valid_seqs,
                 )
@@ -920,7 +922,7 @@ class ClippedPGLossFn(LossFunction):
         elif self.use_importance_sampling_correction:
             if self.sequence_level_importance_ratios:
                 sample_importance_ratio = masked_mean(
-                    actor_importance_weights,
+                    actor_importance_weights.squeeze(-1),
                     sample_mask,
                     global_normalization_factor=global_valid_seqs,
                 )
