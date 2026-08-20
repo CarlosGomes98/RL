@@ -32,7 +32,7 @@ from transformers import (
     AutoTokenizer,
 )
 
-from nemo_rl.algorithms.loss.interfaces import LossFunction
+from nemo_rl.algorithms.loss.interfaces import LossFunction, get_host_loss
 from nemo_rl.distributed.batched_data_dict import BatchedDataDict
 from nemo_rl.models.automodel.checkpoint import AutomodelCheckpointManager
 from nemo_rl.models.automodel.data import (
@@ -393,7 +393,9 @@ class DTensorValueWorkerV2Impl(AbstractPolicyWorker):
                         loss_metrics["global_valid_toks"] = global_valid_toks.item()
 
                         if num_valid_samples > 0:
-                            mb_losses.append(loss.item())
+                            # Loss might already be materialized in the metrics dict
+                            # This avoids a second GPU-to-CPU synchronization here if possible
+                            mb_losses.append(get_host_loss(loss, loss_metrics))
                             all_mb_metrics.append(loss_metrics)
 
                 grad_norm: Optional[float | torch.Tensor] = None

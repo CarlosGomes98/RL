@@ -56,7 +56,7 @@ from nemo_rl.algorithms.logits_sampling_utils import (
     need_top_k_or_top_p_filtering,
 )
 from nemo_rl.algorithms.loss import SequencePackingLossWrapper, prepare_loss_input
-from nemo_rl.algorithms.loss.interfaces import LossFunction, LossType
+from nemo_rl.algorithms.loss.interfaces import LossFunction, LossType, get_host_loss
 from nemo_rl.algorithms.utils import mask_out_neg_inf_logprobs
 from nemo_rl.data_plane.worker_mixin import TQWorkerMixin
 from nemo_rl.distributed.batched_data_dict import BatchedDataDict
@@ -934,6 +934,9 @@ class DTensorPolicyWorkerImpl(
 
                         # skip the update for dummy batches
                         if mb_idx < iterator_len:
+                            # Loss might already be materialized in the metrics dict
+                            # This avoids a second GPU-to-CPU synchronization here if possible
+                            mb_loss_value = get_host_loss(loss, loss_metrics)
                             ## scale by the number of global batches so we get the correct
                             ## value when summing metrics across all microbatches
                             for k in loss_metrics.keys():
@@ -959,10 +962,7 @@ class DTensorPolicyWorkerImpl(
                             loss.backward()
 
                     if num_valid_samples > 0:
-                        # Metrics were materialized together by the loss;
-                        # undo this worker's per-global-batch scaling without
-                        # synchronizing the loss tensor again.
-                        mb_losses.append(loss_metrics["loss"] * num_global_batches)
+                        mb_losses.append(mb_loss_value)
                         all_mb_metrics.append(loss_metrics)
 
                 grad_norm: Optional[float | torch.Tensor] = None

@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import itertools
+import pickle
+from unittest.mock import MagicMock
 
 import pytest
 import torch
@@ -26,8 +28,11 @@ from nemo_rl.algorithms.loss import (
     NLLLossFn,
     prepare_loss_input,
 )
-from nemo_rl.algorithms.loss.interfaces import MetricNormalizer
-from nemo_rl.algorithms.loss.loss_functions import CrossTokenizerDistillationLossFn
+from nemo_rl.algorithms.loss.interfaces import MetricNormalizer, get_host_loss
+from nemo_rl.algorithms.loss.loss_functions import (
+    CrossTokenizerDistillationLossFn,
+    _materialize_scalar_metrics,
+)
 from nemo_rl.algorithms.utils import calculate_kl, masked_mean
 from nemo_rl.algorithms.x_token.loss_utils import (
     build_exact_token_map,
@@ -41,6 +46,38 @@ from nemo_rl.distributed.model_utils import (
     cp_shift_next,
     vocab_parallel_gather_columns,
 )
+
+
+def test_get_host_loss_reuses_canonical_metric():
+    loss = MagicMock()
+
+    assert get_host_loss(loss, {"loss": 1.25}) == pytest.approx(1.25)
+    loss.detach.assert_not_called()
+
+
+@pytest.mark.parametrize("metrics", [{}, {"loss": torch.tensor(99.0)}])
+def test_get_host_loss_falls_back_for_legacy_metrics(metrics):
+    assert get_host_loss(torch.tensor(2.5), metrics) == pytest.approx(2.5)
+
+
+def test_materialize_scalar_metrics_batches_host_transfer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stacked_metrics = MagicMock()
+    stacked_metrics.cpu.return_value.tolist.return_value = [1.25, 3.0]
+    stack = MagicMock(return_value=stacked_metrics)
+    monkeypatch.setattr(torch, "stack", stack)
+
+    metrics = _materialize_scalar_metrics(
+        {"loss": torch.tensor(1.25), "num_valid_samples": torch.tensor(3)},
+        dtype=torch.float32,
+    )
+
+    assert metrics == {"loss": 1.25, "num_valid_samples": 3.0}
+    stack.assert_called_once()
+    assert len(stack.call_args.args[0]) == 2
+    stacked_metrics.cpu.assert_called_once_with()
+    stacked_metrics.cpu.return_value.tolist.assert_called_once_with()
 
 
 def setup_dpo_loss_test_data(vocab_size=16, batch_size=1):
@@ -2155,6 +2192,7 @@ def test_clipped_pg_loss_gspo_sampling_importance_ratio_batch(metrics_level):
 
     assert torch.isfinite(loss)
     assert metrics["sampling_importance_ratio"] == pytest.approx(3.0)
+    assert "sampling_importance_ratio" in loss_fn.metric_normalizations
     loss.backward()
     assert torch.isfinite(curr_logprobs.grad).all()
 
@@ -2841,6 +2879,69 @@ class TestMetricNormalizationAdvertisement:
         assert norms["num_unmasked_tokens"] is MetricNormalizer.NONE
         assert norms["num_valid_samples"] is MetricNormalizer.NONE
 
+    @pytest.mark.parametrize(
+        (
+            "metrics_level",
+            "use_importance_sampling_correction",
+            "expected_importance_weight_calls",
+            "expected_full_metric_calls",
+        ),
+        [
+            ("minimal", False, 0, 0),
+            ("minimal", True, 1, 0),
+            ("full", False, 1, 1),
+        ],
+    )
+    def test_metrics_mode_controls_diagnostic_work(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        metrics_level: str,
+        use_importance_sampling_correction: bool,
+        expected_importance_weight_calls: int,
+        expected_full_metric_calls: int,
+    ) -> None:
+        data, batch_size, seq_len, _ = _setup_clipped_pg_test_data(
+            batch_size=2, seq_len=6, device="cpu"
+        )
+        data["advantages"] = torch.randn(batch_size, seq_len)
+        data["prev_logprobs"] = -torch.rand(batch_size, seq_len)
+        data["generation_logprobs"] = -torch.rand(batch_size, seq_len)
+        curr_logprobs = -torch.rand(batch_size, seq_len - 1)
+        global_valid_seqs = data["sample_mask"].sum().float()
+        global_valid_toks = (
+            (data["token_mask"][:, 1:] * data["sample_mask"].unsqueeze(-1))
+            .sum()
+            .float()
+        )
+
+        loss_fn = ClippedPGLossFn(
+            ClippedPGLossConfig(
+                reference_policy_kl_penalty=0.0,
+                metrics_level=metrics_level,
+                use_importance_sampling_correction=(use_importance_sampling_correction),
+            )
+        )
+        compute_importance_weights = MagicMock(
+            wraps=loss_fn._compute_actor_importance_weights
+        )
+        compute_full_metrics = MagicMock(wraps=loss_fn._compute_full_metrics)
+        monkeypatch.setattr(
+            loss_fn,
+            "_compute_actor_importance_weights",
+            compute_importance_weights,
+        )
+        monkeypatch.setattr(loss_fn, "_compute_full_metrics", compute_full_metrics)
+
+        loss_fn(
+            curr_logprobs,
+            data,
+            global_valid_seqs,
+            global_valid_toks,
+        )
+
+        assert compute_importance_weights.call_count == expected_importance_weight_calls
+        assert compute_full_metrics.call_count == expected_full_metric_calls
+
     def test_minimal_metrics_preserve_loss_and_drop_diagnostics(self):
         data, batch_size, seq_len, _ = _setup_clipped_pg_test_data(
             batch_size=2, seq_len=6, device="cpu"
@@ -2851,8 +2952,10 @@ class TestMetricNormalizationAdvertisement:
         curr_logprobs = -torch.rand(batch_size, seq_len - 1)
         global_valid_seqs = data["sample_mask"].sum().float()
         global_valid_toks = (
-            data["token_mask"][:, 1:] * data["sample_mask"].unsqueeze(-1)
-        ).sum().float()
+            (data["token_mask"][:, 1:] * data["sample_mask"].unsqueeze(-1))
+            .sum()
+            .float()
+        )
 
         full_loss, full_metrics = ClippedPGLossFn(
             ClippedPGLossConfig(reference_policy_kl_penalty=0.0)
@@ -2862,12 +2965,13 @@ class TestMetricNormalizationAdvertisement:
             global_valid_seqs,
             global_valid_toks,
         )
-        minimal_loss, minimal_metrics = ClippedPGLossFn(
+        minimal_loss_fn = ClippedPGLossFn(
             ClippedPGLossConfig(
                 reference_policy_kl_penalty=0.0,
                 metrics_level="minimal",
             )
-        )(
+        )
+        minimal_loss, minimal_metrics = minimal_loss_fn(
             curr_logprobs,
             data,
             global_valid_seqs,
@@ -2883,9 +2987,10 @@ class TestMetricNormalizationAdvertisement:
             "num_valid_samples",
             "positive_nll_loss",
         }
+        assert set(minimal_loss_fn.metric_normalizations) == set(minimal_metrics)
 
     @pytest.mark.parametrize("metrics_level", ["full", "minimal"])
-    def test_torch_compile_configuration_is_independent_of_metrics(
+    def test_torch_compile_is_lazy_pickleable_and_independent_of_metrics(
         self, monkeypatch, metrics_level
     ):
         compile_call = {}
@@ -2903,7 +3008,14 @@ class TestMetricNormalizationAdvertisement:
             )
         )
 
-        assert loss_fn._compiled_actor_objective is compile_call["fn"]
+        assert loss_fn._compiled_actor_objective is None
+        assert compile_call == {}
+
+        # Ray serializes this object before the worker sees it. Compilation must
+        # therefore happen only after deserialization, on the worker itself.
+        loss_fn = pickle.loads(pickle.dumps(loss_fn))
+        assert loss_fn._compiled_actor_objective is None
+        assert loss_fn._get_actor_objective() is compile_call["fn"]
         assert compile_call["kwargs"] == {
             "dynamic": True,
             "fullgraph": True,

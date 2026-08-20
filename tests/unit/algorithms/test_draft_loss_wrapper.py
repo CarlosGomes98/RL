@@ -27,7 +27,7 @@ def test_draft_loss_wrapper_combines_policy_and_draft_loss(mock_draft_loss_cls):
 
     policy_loss = torch.tensor(3.0)
     draft_loss = torch.tensor(2.0)
-    metrics = {"policy_metric": 1.0}
+    metrics = {"loss": 3.0, "policy_metric": 1.0}
     next_token_logits = torch.randn(1, 2, 3)
     data = BatchedDataDict({})
     global_valid = torch.tensor(1)
@@ -52,6 +52,7 @@ def test_draft_loss_wrapper_combines_policy_and_draft_loss(mock_draft_loss_cls):
     )
 
     assert combined_loss.item() == 4.0
+    assert combined_metrics["loss"] == combined_loss.item()
     assert combined_metrics["draft_loss"] == draft_loss.item()
     assert combined_metrics["policy_metric"] == metrics["policy_metric"]
 
@@ -89,6 +90,7 @@ def test_draft_loss_wrapper_reports_draft_loss_when_weight_is_zero(
     )
 
     assert combined_loss.item() == policy_loss.item()
+    assert metrics["loss"] == combined_loss.item()
     assert metrics["draft_loss"] == draft_loss.item()
 
 

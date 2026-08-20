@@ -285,7 +285,22 @@ class DraftLossWrapper:
             **loss_input,
         )
         combined_loss = policy_loss + self.loss_weight * draft_loss
-        metrics["draft_loss"] = float(draft_loss.detach().item())
+        # The wrapper changes the objective, so replace the policy-only loss
+        # metric with the combined objective. Materialize both wrapper metrics
+        # in one transfer to preserve the LossFunction metric contract without
+        # introducing one synchronization per scalar.
+        combined_loss_value, draft_loss_value = (
+            torch.stack(
+                (
+                    combined_loss.detach(),
+                    draft_loss.detach().to(combined_loss),
+                )
+            )
+            .cpu()
+            .tolist()
+        )
+        metrics["loss"] = combined_loss_value
+        metrics["draft_loss"] = draft_loss_value
         return combined_loss, metrics
 
 

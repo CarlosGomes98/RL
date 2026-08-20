@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import enum
+from numbers import Real
 from typing import Any, Protocol
 
 import torch
@@ -104,7 +105,23 @@ class LossFunction(Protocol):
         Returns:
             tuple: (loss, metrics)
                 - loss: A scalar tensor representing the loss value to be minimized during training
-                - metrics: A dictionary of metrics related to the loss computation, which may include
-                  component losses, statistics about gradients/rewards, and other diagnostic information
+                - metrics: A dictionary of metrics related to the loss computation.
+                  For scalar losses, ``metrics["loss"]`` must be a host scalar
+                  numerically equal to ``loss.detach().item()``. Consumers use
+                  this canonical value to avoid materializing the loss twice.
+                  The dictionary may also include component losses, statistics
+                  about gradients/rewards, and other diagnostic information.
         """
         ...
+
+
+def get_host_loss(loss: torch.Tensor, metrics: dict[str, Any]) -> float:
+    """Return a canonical host loss, with compatibility for legacy losses.
+
+    Conforming loss functions provide ``metrics["loss"]`` as a host scalar.
+    Falls back to the returned tensor.
+    """
+    metric_loss = metrics.get("loss")
+    if isinstance(metric_loss, Real) and not isinstance(metric_loss, bool):
+        return float(metric_loss)
+    return float(loss.detach().item())
