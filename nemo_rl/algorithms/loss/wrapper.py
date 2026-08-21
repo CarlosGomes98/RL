@@ -21,6 +21,7 @@ import torch.distributed
 from nemo_rl.algorithms.loss.interfaces import LossFunction
 from nemo_rl.algorithms.loss.loss_functions import DraftCrossEntropyLossFn
 from nemo_rl.distributed.batched_data_dict import BatchedDataDict
+from nemo_rl.utils.nsys import detailed_nvtx_range, wrap_with_detailed_nvtx_name
 
 Tensor = TypeVar("Tensor", bound=torch.Tensor)
 
@@ -60,6 +61,7 @@ class SequencePackingLossWrapper:
         self.vocab_parallel_group = vocab_parallel_group
         self.context_parallel_group = context_parallel_group
 
+    @wrap_with_detailed_nvtx_name("GRPO/loss/sequence_packing/per_sequence")
     def __call__(
         self,
         next_token_logits: Tensor,
@@ -84,8 +86,11 @@ class SequencePackingLossWrapper:
         loss_accum = 0
         metrics_accum = {}
         for seq_idx in range(len(seq_starts)):
-            seq_start = seq_starts[seq_idx].item()
-            seq_end = seq_ends[seq_idx].item()
+            with detailed_nvtx_range(
+                "GRPO/loss/sequence_packing/per_sequence/metadata"
+            ):
+                seq_start = seq_starts[seq_idx].item()
+                seq_end = seq_ends[seq_idx].item()
 
             # get sequence and unpad all 'data' tensors. The data dict is a BatchedDataDict of unpacked tensors
             seq_data = data.slice(seq_idx, seq_idx + 1)
@@ -151,7 +156,10 @@ class SequencePackingLossWrapper:
                     else:
                         metrics_accum[k] = 0
 
-                val = v.item() if isinstance(v, torch.Tensor) and v.ndim == 0 else v
+                with detailed_nvtx_range(
+                    "GRPO/loss/sequence_packing/per_sequence/aggregate_metric"
+                ):
+                    val = v.item() if isinstance(v, torch.Tensor) and v.ndim == 0 else v
 
                 # Skip inf/-inf sentinel values (from sequences with no valid tokens)
                 if k in {"probs_ratio_min", "probs_ratio_clamped_min"}:
@@ -201,6 +209,7 @@ class SequencePackingFusionLossWrapper:
         self.vocab_parallel_group = vocab_parallel_group
         self.context_parallel_group = context_parallel_group
 
+    @wrap_with_detailed_nvtx_name("GRPO/loss/sequence_packing/fused")
     def __call__(
         self,
         next_token_logits: Tensor,
@@ -289,6 +298,7 @@ class DraftLossWrapper:
         return combined_loss, metrics
 
 
+@wrap_with_detailed_nvtx_name("GRPO/loss/unpacked")
 def wrap_loss_fn_with_input_preparation(
     next_token_logits: Tensor,
     data: BatchedDataDict[Any],

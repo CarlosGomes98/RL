@@ -64,6 +64,7 @@ from nemo_rl.models.megatron.router_replay import (
     set_router_replay_forward,
 )
 from nemo_rl.models.policy import PolicyConfig
+from nemo_rl.utils.nsys import detailed_nvtx_range
 
 # Union type for any post-processing function (defined after classes below)
 PostProcessingFunction = Union[
@@ -275,12 +276,13 @@ def forward_with_post_processing_fn(
             raise RuntimeError(
                 "Router replay is enabled but routed_experts is missing from the microbatch."
             )
-        set_router_replay_forward(model, routed_experts_cp_sharded)
+        with detailed_nvtx_range("GRPO/train/router_replay/set_forward"):
+            set_router_replay_forward(model, routed_experts_cp_sharded)
 
     # Insert hook to capture hidden states and embeddings for draft model training if draft_model is provided
     capture_context, capture = get_capture_context(model, enable_hidden_capture)
     try:
-        with capture_context:
+        with capture_context, detailed_nvtx_range("GRPO/train/model_forward"):
             output_tensor = model_forward(
                 model=model,
                 data_dict=data_dict,
@@ -304,9 +306,11 @@ def forward_with_post_processing_fn(
 
     if use_router_replay:
         if router_replay_train:
-            set_router_replay_backward(model)
+            with detailed_nvtx_range("GRPO/train/router_replay/set_backward"):
+                set_router_replay_backward(model)
         else:
-            clear_router_replay(model)
+            with detailed_nvtx_range("GRPO/train/router_replay/clear"):
+                clear_router_replay(model)
 
     if capture is not None:
         from megatron.core.transformer.multi_token_prediction import roll_tensor
@@ -333,7 +337,8 @@ def forward_with_post_processing_fn(
         # Temperature scaling is element-wise, directly applying it here.
         # Other sampling parameters like top-k and top-p need the logits from whole vocabulary,
         # so applying them when gathering logits from vocab parallel (called in LossPostProcessor and LogprobsPostProcessor).
-        apply_temperature_scaling(output_tensor, sampling_params)
+        with detailed_nvtx_range("GRPO/loss/temperature_scaling"):
+            apply_temperature_scaling(output_tensor, sampling_params)
 
     # Use type checking to dispatch to the correct post-processing method
     if isinstance(post_processing_fn, LossPostProcessor):
@@ -577,7 +582,9 @@ class LossPostProcessor:
 
             def _div_by_cp_size(*args, **kwargs):
                 loss, metrics = prev_loss_fn(*args, **kwargs)
-                return loss / cp_size, metrics
+                with detailed_nvtx_range("GRPO/loss/cp_scaling"):
+                    scaled_loss = loss / cp_size
+                return scaled_loss, metrics
 
             loss_fn_wrapped = _div_by_cp_size
 
@@ -589,7 +596,9 @@ class LossPostProcessor:
 
         def _counteract_mcore_loss_averaging(*args, **kwargs):
             loss, metrics = loss_fn_before_mcore_scaling(*args, **kwargs)
-            return loss * num_microbatches / cp_size, metrics
+            with detailed_nvtx_range("GRPO/loss/mcore_scaling"):
+                scaled_loss = loss * num_microbatches / cp_size
+            return scaled_loss, metrics
 
         loss_fn_wrapped = _counteract_mcore_loss_averaging
 

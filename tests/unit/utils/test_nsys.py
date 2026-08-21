@@ -15,7 +15,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from nemo_rl.utils.nsys import maybe_gpu_profile_step
+from nemo_rl.utils.nsys import detailed_nvtx_range, maybe_gpu_profile_step
 
 
 class MockPolicy:
@@ -27,6 +27,47 @@ class MockPolicy:
 
     def __repr__(self):
         return "MockPolicy"
+
+
+class TestDetailedNvtxRange:
+    """Tests for opt-in fine-grained NVTX annotations."""
+
+    @patch("nemo_rl.utils.nsys.torch.cuda.nvtx.range_pop")
+    @patch("nemo_rl.utils.nsys.torch.cuda.nvtx.range_push")
+    def test_disabled_range_is_noop(self, mock_range_push, mock_range_pop):
+        with (
+            patch("nemo_rl.utils.nsys.NRL_NSYS_DETAILED_NVTX", False),
+            detailed_nvtx_range("test/range"),
+        ):
+            pass
+
+        mock_range_push.assert_not_called()
+        mock_range_pop.assert_not_called()
+
+    @patch("nemo_rl.utils.nsys.torch.cuda.nvtx.range_pop")
+    @patch("nemo_rl.utils.nsys.torch.cuda.nvtx.range_push")
+    def test_enabled_range_pushes_and_pops(self, mock_range_push, mock_range_pop):
+        with (
+            patch("nemo_rl.utils.nsys.NRL_NSYS_DETAILED_NVTX", True),
+            detailed_nvtx_range("test/range"),
+        ):
+            mock_range_push.assert_called_once_with("test/range")
+            mock_range_pop.assert_not_called()
+
+        mock_range_pop.assert_called_once_with()
+
+    @patch("nemo_rl.utils.nsys.torch.cuda.nvtx.range_pop")
+    @patch("nemo_rl.utils.nsys.torch.cuda.nvtx.range_push")
+    def test_enabled_range_pops_on_exception(self, mock_range_push, mock_range_pop):
+        with (
+            patch("nemo_rl.utils.nsys.NRL_NSYS_DETAILED_NVTX", True),
+            pytest.raises(RuntimeError, match="failure"),
+        ):
+            with detailed_nvtx_range("test/range"):
+                raise RuntimeError("failure")
+
+        mock_range_push.assert_called_once_with("test/range")
+        mock_range_pop.assert_called_once_with()
 
 
 class TestMaybeGpuProfileStep:

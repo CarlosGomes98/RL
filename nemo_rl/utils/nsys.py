@@ -14,13 +14,16 @@
 import atexit
 import json
 import os
-from typing import Any, Protocol
+from contextlib import contextmanager
+from functools import wraps
+from typing import Any, Iterator, Protocol
 
 import rich
 import torch
 
 NRL_NSYS_WORKER_PATTERNS = os.environ.get("NRL_NSYS_WORKER_PATTERNS", "")
 NRL_NSYS_PROFILE_STEP_RANGE = os.environ.get("NRL_NSYS_PROFILE_STEP_RANGE", "")
+NRL_NSYS_DETAILED_NVTX = os.environ.get("NRL_NSYS_DETAILED_NVTX", "0") == "1"
 
 
 def _parse_extra_options(raw: str) -> dict[str, Any]:
@@ -110,15 +113,45 @@ def maybe_gpu_profile_step(policy: ProfilablePolicy, step: int):
             policy.__NRL_PROFILE_STARTED = False
 
 
+@contextmanager
+def detailed_nvtx_range(name: str) -> Iterator[None]:
+    """Emit an opt-in NVTX range for fine-grained profiling."""
+    if not NRL_NSYS_DETAILED_NVTX:
+        yield
+        return
+
+    torch.cuda.nvtx.range_push(name)
+    try:
+        yield
+    finally:
+        torch.cuda.nvtx.range_pop()
+
+
+def wrap_with_detailed_nvtx_name(name: str):
+    """Decorate a function with an opt-in fine-grained NVTX range."""
+
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            with detailed_nvtx_range(name):
+                return func(*args, **kwargs)
+
+        return wrapper
+
+    return decorator
+
+
 def wrap_with_nvtx_name(name: str):
     """A decorator to wrap a function with an NVTX range with the given name."""
 
     def decorator(func):
+        @wraps(func)
         def wrapper(*args, **kwargs):
             torch.cuda.nvtx.range_push(name)
-            ret = func(*args, **kwargs)
-            torch.cuda.nvtx.range_pop()
-            return ret
+            try:
+                return func(*args, **kwargs)
+            finally:
+                torch.cuda.nvtx.range_pop()
 
         return wrapper
 

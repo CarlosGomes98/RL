@@ -23,6 +23,7 @@ from nemo_rl.algorithms.logits_sampling_utils import (
     apply_top_k_top_p,
     need_top_k_or_top_p_filtering,
 )
+from nemo_rl.utils.nsys import detailed_nvtx_range, wrap_with_detailed_nvtx_name
 
 if TYPE_CHECKING:
     # megatron-core (optional "mcore" extra) is imported lazily below so this
@@ -68,6 +69,7 @@ def _compute_distributed_log_softmax_with_grad(
 
 
 @torch.no_grad()
+@wrap_with_detailed_nvtx_name("GRPO/logprob/distributed_log_softmax")
 def _compute_distributed_log_softmax(
     vocab_parallel_logits: torch.Tensor, group: torch.distributed.ProcessGroup
 ) -> torch.Tensor:
@@ -124,6 +126,7 @@ class DistributedLogprob(torch.autograd.Function):
     """
 
     @staticmethod
+    @wrap_with_detailed_nvtx_name("GRPO/logprob/distributed/forward")
     def forward(  # pyrefly: ignore[bad-override]  Always ignore torch.autograd.Function.forward's type since it's always more specific than the base class
         ctx: Any,
         vocab_parallel_logits: torch.Tensor,
@@ -165,6 +168,7 @@ class DistributedLogprob(torch.autograd.Function):
         return log_probs
 
     @staticmethod
+    @wrap_with_detailed_nvtx_name("GRPO/logprob/distributed/backward")
     def backward(
         ctx: Any,
         *grad_outputs: torch.Tensor,
@@ -276,6 +280,7 @@ class ChunkedDistributedLogprob(torch.autograd.Function):
     """
 
     @staticmethod
+    @wrap_with_detailed_nvtx_name("GRPO/logprob/chunked/forward")
     def forward(  # pyrefly: ignore[bad-override]  Always ignore torch.autograd.Function.forward's type since it's always more specific than the base class
         ctx: Any,
         vocab_parallel_logits: torch.Tensor,
@@ -307,20 +312,26 @@ class ChunkedDistributedLogprob(torch.autograd.Function):
                 group=tp_group,
             )
 
-            log_probs = torch.gather(
-                log_probs, -1, masked_target[:, chunk_start:chunk_end].unsqueeze(-1)
-            ).squeeze(-1)
-            log_probs[target_mask[:, chunk_start:chunk_end]] = 0.0
+            with detailed_nvtx_range(
+                "GRPO/logprob/chunked/forward/target_gather_reduce"
+            ):
+                log_probs = torch.gather(
+                    log_probs,
+                    -1,
+                    masked_target[:, chunk_start:chunk_end].unsqueeze(-1),
+                ).squeeze(-1)
+                log_probs[target_mask[:, chunk_start:chunk_end]] = 0.0
 
-            torch.distributed.all_reduce(
-                log_probs,
-                op=torch.distributed.ReduceOp.SUM,
-                group=tp_group,
-            )
+                torch.distributed.all_reduce(
+                    log_probs,
+                    op=torch.distributed.ReduceOp.SUM,
+                    group=tp_group,
+                )
 
             all_log_probs.append(log_probs)
 
-        log_probs = torch.cat(all_log_probs, dim=1)
+        with detailed_nvtx_range("GRPO/logprob/chunked/forward/finalize"):
+            log_probs = torch.cat(all_log_probs, dim=1)
 
         if not inference_only:
             # only save for backward when we have inference only=False
@@ -331,6 +342,7 @@ class ChunkedDistributedLogprob(torch.autograd.Function):
         return log_probs
 
     @staticmethod
+    @wrap_with_detailed_nvtx_name("GRPO/logprob/chunked/backward")
     def backward(
         ctx: Any,
         *grad_outputs: torch.Tensor,
@@ -359,19 +371,20 @@ class ChunkedDistributedLogprob(torch.autograd.Function):
             )
             softmax_output = softmax_output.exp()
 
-            # 1 if it's the chosen log prob, 0 otherwise
-            is_chosen = (~(target_mask[:, chunk_start:chunk_end])).unsqueeze(
-                -1
-            ) * torch.nn.functional.one_hot(
-                masked_target[:, chunk_start:chunk_end],
-                num_classes=partition_vocab_size,
-            )
+            with detailed_nvtx_range("GRPO/logprob/chunked/backward/one_hot_gradient"):
+                # 1 if it's the chosen log prob, 0 otherwise
+                is_chosen = (~(target_mask[:, chunk_start:chunk_end])).unsqueeze(
+                    -1
+                ) * torch.nn.functional.one_hot(
+                    masked_target[:, chunk_start:chunk_end],
+                    num_classes=partition_vocab_size,
+                )
 
-            chunk_grad_fp32 = is_chosen.float().sub_(softmax_output)
-            chunk_grad_fp32.mul_(
-                grad_output[:, chunk_start:chunk_end].unsqueeze(dim=-1)
-            )
-            grad_input[:, chunk_start:chunk_end, :].copy_(chunk_grad_fp32)
+                chunk_grad_fp32 = is_chosen.float().sub_(softmax_output)
+                chunk_grad_fp32.mul_(
+                    grad_output[:, chunk_start:chunk_end].unsqueeze(dim=-1)
+                )
+                grad_input[:, chunk_start:chunk_end, :].copy_(chunk_grad_fp32)
 
             # Explicitly free before next iteration allocates
             del softmax_output, is_chosen, logits, chunk_grad_fp32

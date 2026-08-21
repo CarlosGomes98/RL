@@ -32,8 +32,10 @@ from nemo_rl.distributed.model_utils import (
     get_distillation_topk_logprobs_from_logits,
     get_next_token_logprobs_from_logits,
 )
+from nemo_rl.utils.nsys import wrap_with_detailed_nvtx_name
 
 
+@wrap_with_detailed_nvtx_name("GRPO/loss/prepare_input")
 def prepare_loss_input(
     logits: torch.Tensor,
     data: BatchedDataDict[Any],
@@ -211,6 +213,7 @@ def prepare_loss_input(
     return loss_input, data
 
 
+@wrap_with_detailed_nvtx_name("GRPO/loss/pack_targets")
 def _pack_input_ids(
     input_ids: torch.Tensor,
     cu_seqlens_q: torch.Tensor,
@@ -261,6 +264,7 @@ def _pack_input_ids(
     return packed.unsqueeze(0)
 
 
+@wrap_with_detailed_nvtx_name("GRPO/loss/prepare_packed_input")
 def prepare_packed_loss_input(
     logits: torch.Tensor,
     data: BatchedDataDict[Any],
