@@ -1020,8 +1020,8 @@ def _prepare_vlm_batch_for_megatron(
     device = input_ids.device
     align = max(1, pad_individual_seqs_to_multiple_of)
 
-    # The production iterator supplies CPU integers captured before H2D. Direct
-    # callers with a tensor pay at most one .tolist() transfer here.
+    # One CPU-GPU sync per call via .tolist(); per-seq arithmetic runs on CPU
+    # ints (fast) instead of .item() in a loop (which sync'd per seq).
     lengths_list = list(to_cpu_int_tuple(seq_lengths))
     padded_lens = [_round_up_to_multiple(L, align) for L in lengths_list]
 
